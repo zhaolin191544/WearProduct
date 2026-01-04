@@ -474,8 +474,8 @@ def search_ratio(req: RatioSearchRequest, user: User = Depends(get_current_user)
         "crate_target_counts": target_counts,
         "plans": plans,
         "notes": [
-            "概率搜索：在满足磨损条件的前提下，优先让配料的箱子数量比例接近你填写的权重。",
-            "评分：先最小化箱子比例距离（L1），再最小化 sum(x) 偏离中心。",
+            "概率搜索：只返回箱子数量比例严格符合你填写权重的方案。",
+            "评分：在比例严格匹配前提下，最小化 sum(x) 偏离中心。",
             "边界：左闭右开（target_low <= out < target_high）。",
         ]
     }

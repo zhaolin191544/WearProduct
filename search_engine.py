@@ -931,10 +931,12 @@ def query_best_plan_ratio(
     *,
     left_limit: int = 25000,
     probe_limit: int = 80,
+    exact_ratio_only: bool = False,
     right_open: bool = True,
 ):
     """
     Return (dist, sum_score, total_sum, chosen_materials[10], plan_mask) or None
+    exact_ratio_only=True 时只返回严格比例匹配（dist==0）的方案。
     """
     combos = pre.combos5
     sums = pre.combo_sums
@@ -949,7 +951,7 @@ def query_best_plan_ratio(
     target_left = desired_total / 2.0
 
     best = None
-    best_key = None  # (dist, sum_score)
+    best_key = None  # (dist, sum_score) or (sum_score,) if exact only
 
     K = len(target_counts_arr)
     shifts = [3 * i for i in range(K)]
@@ -1002,7 +1004,10 @@ def query_best_plan_ratio(
                     dist += abs(cnt - tgt)
 
                 sum_score = abs(total - desired_total)
-                key = (dist, sum_score)
+                if exact_ratio_only and dist != 0:
+                    continue
+
+                key = (sum_score,) if exact_ratio_only else (dist, sum_score)
 
                 if best_key is None or key < best_key:
                     chosen_idxs = tuple(sorted(idxL + idxR))
@@ -1016,6 +1021,177 @@ def query_best_plan_ratio(
                         return best
 
     return best
+
+def _get_seed_plans_ratio(
+    pre: Precomp,
+    sum_lo: float,
+    sum_hi: float,
+    desired_total: float,
+    target_counts_arr: List[int],
+    *,
+    seed_k: int = 25,
+    left_limit: int = 40000,
+    probe_limit: int = 200,
+    right_open: bool = True,
+) -> List[tuple]:
+    """
+    找一批“第一组候选方案”（严格按箱子比例），用于 multi-start。
+    返回 [(sum_score,total,chosen,plan_mask), ...]，按 sum_score 排序。
+    """
+    combos = pre.combos5
+    sums = pre.combo_sums
+    cpacks = pre.combo_cpacks
+    if cpacks is None:
+        raise ValueError("pre.combo_cpacks is required for ratio seed search")
+
+    nC = len(combos)
+    left_limit = min(left_limit, nC)
+    target_left = desired_total / 2.0
+
+    seeds = []
+    seen = set()
+
+    shifts = [3 * i for i in range(len(target_counts_arr))]
+
+    for li in iter_indices_near_target(sums, target_left, left_limit):
+        sL, maskL, idxL = combos[li]
+        need_lo = sum_lo - sL
+        need_hi = sum_hi - sL
+        if need_hi < sums[0] - 1e-12 or need_lo > sums[-1] + 1e-12:
+            continue
+
+        j0 = bisect_left(sums, need_lo - 1e-12)
+        j1 = bisect_left(sums, need_hi + 1e-12)
+        if j0 >= j1:
+            continue
+
+        targetR = desired_total - sL
+        take = min(probe_limit, j1 - j0)
+        for j in _iter_window_near_target(sums, targetR, j0, j1, take):
+            sR2, maskR, idxR = combos[j]
+            if maskL & maskR:
+                continue
+
+            total = sL + sR2
+            if total < sum_lo - 1e-12:
+                continue
+            if right_open:
+                if total >= sum_hi - 1e-12:
+                    continue
+            else:
+                if total > sum_hi + 1e-9:
+                    continue
+
+            cL = cpacks[li]
+            cR = cpacks[j]
+            dist = 0
+            for sh, tgt in zip(shifts, target_counts_arr):
+                cnt = ((cL >> sh) & 7) + ((cR >> sh) & 7)
+                dist += abs(cnt - tgt)
+            if dist != 0:
+                continue
+
+            plan_mask = maskL | maskR
+            if plan_mask in seen:
+                continue
+            seen.add(plan_mask)
+
+            chosen_idxs = tuple(sorted(idxL + idxR))
+            chosen = [pre.mats[i] for i in chosen_idxs]
+            chosen = sorted(chosen, key=lambda m: m.id)
+
+            sum_score = abs(total - desired_total)
+            seeds.append((sum_score, total, chosen, plan_mask))
+
+            if len(seeds) >= seed_k:
+                seeds.sort(key=lambda t: t[0])
+                return seeds
+
+    seeds.sort(key=lambda t: t[0])
+    return seeds
+
+
+def _pack_plans_multistart_ratio(
+    pre: Precomp,
+    slot_ranges: List[dict],
+    L_all: float,
+    U_all: float,
+    target_counts_arr: List[int],
+    *,
+    seed_k: int = 25,
+    right_open: bool = True,
+) -> List[dict]:
+    """
+    目标：尽可能多地返回“严格比例”方案。
+    """
+    sum_lo = 10.0 * L_all
+    sum_hi = 10.0 * U_all
+    desired_total = (sum_lo + sum_hi) / 2.0
+
+    seeds = _get_seed_plans_ratio(
+        pre,
+        sum_lo,
+        sum_hi,
+        desired_total,
+        target_counts_arr,
+        seed_k=seed_k,
+        left_limit=len(pre.combo_sums),
+        probe_limit=250,
+        right_open=right_open,
+    )
+
+    if not seeds:
+        return []
+
+    best_pack = []
+    best_used = -1
+
+    seed_options = [None] + seeds
+
+    for seed in seed_options:
+        used_mask = 0
+        pack = []
+
+        if seed is not None:
+            sum_score, total_sum, chosen, plan_mask = seed
+            used_mask |= plan_mask
+            mean_x = total_sum / 10.0
+            plan = make_plan_dict(pre.rarity, mean_x, chosen, slot_ranges, right_open=right_open)
+            if plan is not None:
+                plan["crate_distance"] = 0
+                pack.append(plan)
+
+        while True:
+            best = query_best_plan_ratio(
+                pre,
+                sum_lo,
+                sum_hi,
+                used_mask,
+                desired_total,
+                target_counts_arr=target_counts_arr,
+                left_limit=len(pre.combo_sums),
+                probe_limit=200,
+                exact_ratio_only=True,
+                right_open=right_open,
+            )
+            if best is None:
+                break
+            dist, sum_score, total_sum, chosen, plan_mask = best
+            used_mask |= plan_mask
+
+            mean_x = total_sum / 10.0
+            plan = make_plan_dict(pre.rarity, mean_x, chosen, slot_ranges, right_open=right_open)
+            if plan is None:
+                continue
+            plan["crate_distance"] = int(dist)
+            pack.append(plan)
+
+        used_cnt = 10 * len(pack)
+        if (len(pack) > len(best_pack)) or (len(pack) == len(best_pack) and used_cnt > best_used):
+            best_pack = pack
+            best_used = used_cnt
+
+    return best_pack
 
 def search_plans_for_rarity_ratio(
     rarity: int,
@@ -1041,6 +1217,23 @@ def search_plans_for_rarity_ratio(
     crate_to_idx = {c: i for i, c in enumerate(crate_order)}
 
     mats_sorted = sorted(mats_all, key=lambda m: m.x)
+
+    if len(mats_sorted) <= 60 and estimate_combo_count(len(mats_sorted)) <= max_combo_count:
+        pre_small = build_precomp_for_candidates_ratio(rarity, mats_sorted, crate_to_idx=crate_to_idx)
+        if pre_small is not None:
+            plans = _pack_plans_multistart_ratio(
+                pre_small,
+                slot_ranges,
+                L_all,
+                U_all,
+                target_arr,
+                seed_k=30,
+                right_open=right_open,
+            )
+            for plan in plans:
+                plan["crate_target_counts"] = target_counts
+            return plans, target_counts
+
     global_used_ids: Set[int] = set()
     all_plans: List[dict] = []
 
@@ -1072,86 +1265,24 @@ def search_plans_for_rarity_ratio(
         if pre is None:
             break
 
-        used_mask = 0
-        local_found = 0
-        while True:
-            best = query_best_plan_ratio(
-                pre,
-                sum_lo,
-                sum_hi,
-                used_mask,
-                desired_total,
-                target_counts_arr=target_arr,
-                left_limit=25000,
-                probe_limit=80,
-                right_open=right_open,
-            )
-            if best is None:
-                break
-            dist, sum_score, total_sum, chosen, plan_mask = best
-            used_mask |= plan_mask
+        local_plans = _pack_plans_multistart_ratio(
+            pre,
+            slot_ranges,
+            L_all,
+            U_all,
+            target_arr,
+            seed_k=25,
+            right_open=right_open,
+        )
 
-            mean_x = total_sum / 10.0
-            plan = make_plan_dict(rarity, mean_x, chosen, slot_ranges, right_open=right_open)
-            if plan is None:
-                continue
+        if not local_plans:
+            break
 
-            plan["crate_distance"] = int(dist)
+        for plan in local_plans:
             plan["crate_target_counts"] = target_counts
             all_plans.append(plan)
-            local_found += 1
-
-            for m in chosen:
-                global_used_ids.add(m.id)
-
-            if len([m for m in pre.mats if m.id not in global_used_ids]) < 10:
-                break
-
-        if local_found == 0:
-            if estimate_combo_count(len(remaining)) > max_combo_count:
-                got = False
-                for alt in (L_all, U_all):
-                    cand2 = pick_candidates_ratio(
-                        remaining,
-                        target_mean_x=alt,
-                        cap=cap,
-                        crate_order=crate_order,
-                        target_counts=target_counts,
-                    )
-                    pre2 = build_precomp_for_candidates_ratio(rarity, cand2, crate_to_idx=crate_to_idx)
-                    if pre2 is None:
-                        continue
-                    used_mask2 = 0
-                    best2 = query_best_plan_ratio(
-                        pre2,
-                        sum_lo,
-                        sum_hi,
-                        used_mask2,
-                        desired_total,
-                        target_counts_arr=target_arr,
-                        left_limit=35000,
-                        probe_limit=120,
-                        right_open=right_open,
-                    )
-                    if best2 is None:
-                        continue
-                    dist, sum_score, total_sum, chosen, plan_mask = best2
-                    used_mask2 |= plan_mask
-                    mean_x = total_sum / 10.0
-                    plan2 = make_plan_dict(rarity, mean_x, chosen, slot_ranges, right_open=right_open)
-                    if plan2 is None:
-                        continue
-                    plan2["crate_distance"] = int(dist)
-                    plan2["crate_target_counts"] = target_counts
-                    all_plans.append(plan2)
-                    for m in chosen:
-                        global_used_ids.add(m.id)
-                    got = True
-                    break
-                if not got:
-                    break
-            else:
-                break
+            for m in plan["materials"]:
+                global_used_ids.add(m["id"])
 
         rounds += 1
 
