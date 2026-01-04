@@ -929,7 +929,7 @@ def query_best_plan_ratio(
     desired_total: float,
     target_counts_arr: List[int],
     *,
-    left_limit: int = 25000,
+    left_limit: int = 12000,
     probe_limit: int = 80,
     exact_ratio_only: bool = False,
     right_open: bool = True,
@@ -1004,10 +1004,16 @@ def query_best_plan_ratio(
                     dist += abs(cnt - tgt)
 
                 sum_score = abs(total - desired_total)
-                if exact_ratio_only and dist != 0:
-                    continue
+                if exact_ratio_only:
+                    if dist != 0:
+                        continue
+                    chosen_idxs = tuple(sorted(idxL + idxR))
+                    chosen = [pre.mats[i] for i in chosen_idxs]
+                    chosen = sorted(chosen, key=lambda m: m.id)
+                    plan_mask = maskL | maskR
+                    return (dist, sum_score, total, chosen, plan_mask)
 
-                key = (sum_score,) if exact_ratio_only else (dist, sum_score)
+                key = (dist, sum_score)
 
                 if best_key is None or key < best_key:
                     chosen_idxs = tuple(sorted(idxL + idxR))
@@ -1029,9 +1035,9 @@ def _get_seed_plans_ratio(
     desired_total: float,
     target_counts_arr: List[int],
     *,
-    seed_k: int = 25,
-    left_limit: int = 40000,
-    probe_limit: int = 200,
+    seed_k: int = 12,
+    left_limit: int = 12000,
+    probe_limit: int = 120,
     right_open: bool = True,
 ) -> List[tuple]:
     """
@@ -1118,7 +1124,7 @@ def _pack_plans_multistart_ratio(
     U_all: float,
     target_counts_arr: List[int],
     *,
-    seed_k: int = 25,
+    seed_k: int = 12,
     right_open: bool = True,
 ) -> List[dict]:
     """
@@ -1136,7 +1142,7 @@ def _pack_plans_multistart_ratio(
         target_counts_arr,
         seed_k=seed_k,
         left_limit=len(pre.combo_sums),
-        probe_limit=250,
+        probe_limit=120,
         right_open=right_open,
     )
 
@@ -1169,8 +1175,8 @@ def _pack_plans_multistart_ratio(
                 used_mask,
                 desired_total,
                 target_counts_arr=target_counts_arr,
-                left_limit=len(pre.combo_sums),
-                probe_limit=200,
+                left_limit=12000,
+                probe_limit=80,
                 exact_ratio_only=True,
                 right_open=right_open,
             )
@@ -1227,7 +1233,7 @@ def search_plans_for_rarity_ratio(
                 L_all,
                 U_all,
                 target_arr,
-                seed_k=30,
+                seed_k=12,
                 right_open=right_open,
             )
             for plan in plans:
@@ -1271,7 +1277,7 @@ def search_plans_for_rarity_ratio(
             L_all,
             U_all,
             target_arr,
-            seed_k=25,
+            seed_k=12,
             right_open=right_open,
         )
 
