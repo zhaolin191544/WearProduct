@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import HTMLResponse
@@ -353,25 +355,46 @@ def search(req: MultiSearchRequest, user: User = Depends(get_current_user)):
 
     materials = _db_items_to_materials(items)
 
-    plans = search_bucket_all_plans(
-        materials,
-        slot_ranges,
-        L_all,
-        U_all,
-        cap=40,
-        max_combo_count=2_000_000,
-        right_open=True,
-    )
+    has_crates = any(m.crate for m in materials)
+    if has_crates:
+        plans = search_bucket_all_plans(
+            materials,
+            slot_ranges,
+            L_all,
+            U_all,
+            cap=40,
+            max_combo_count=2_000_000,
+            right_open=True,
+        )
+        notes = [
+            "普通搜索：只要求磨损满足；找到方案后会排除用料继续搜（提高利用率）。",
+            "边界：左闭右开（target_low <= out < target_high）。"
+        ]
+    else:
+        none_crate = "none"
+        materials = [replace(m, crate=none_crate) for m in materials]
+        plans, _, _ = search_bucket_all_plans_with_crate_ratio(
+            materials,
+            slot_ranges,
+            L_all,
+            U_all,
+            crate_weights={none_crate: 1.0},
+            crate_order=[none_crate],
+            cap=40,
+            max_combo_count=2_000_000,
+            right_open=True,
+        )
+        notes = [
+            "普通搜索：桶内无箱子数据，使用概率搜索算法（视为 none 箱子填 10）。",
+            "边界：左闭右开（target_low <= out < target_high）。"
+        ]
 
     return {
         "input_slots": len(slots),
         "joint_mean_x_range": {"L": L_all, "U": U_all},
         "slot_ranges": slot_ranges,
         "plans": plans,
-        "notes": [
-            "普通搜索：只要求磨损满足；找到方案后会排除用料继续搜（提高利用率）。",
-            "边界：左闭右开（target_low <= out < target_high）。"
-        ]
+        "notes": notes,
     }
 
 
