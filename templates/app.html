@@ -1,0 +1,325 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>库存</title>
+  <style>
+    body{font-family:system-ui; padding:24px; color:#111;}
+    h2{margin:0 0 8px 0;}
+    .muted{color:#666; font-size:12px;}
+    .row{display:flex; gap:10px; align-items:center; margin:12px 0;}
+    select,input{padding:8px 10px; border:1px solid #ddd; border-radius:10px;}
+    button{padding:8px 10px; border:1px solid #ddd; border-radius:10px; background:#fff; cursor:pointer;}
+    button:hover{background:#f6f6f6;}
+    table{width:100%; border-collapse:collapse; margin-top:10px;}
+    th,td{border-top:1px solid #efefef; padding:8px 6px; text-align:left; font-size:13px;}
+    th{color:#555; font-weight:700; font-size:12px;}
+    .card{border:1px solid #eee; border-radius:12px; padding:12px; margin-top:12px;}
+    .err{color:#b00020; white-space:pre-wrap;}
+    .pill{display:inline-block; padding:2px 8px; border-radius:999px; background:#f3f3f3; font-size:12px; color:#333;}
+    .spacer{flex:1;}
+    .topbar{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;}
+    .cell-input{width:100px; padding:6px 8px; border:1px solid #ddd; border-radius:8px; font-size:12px;}
+    .cell-input.short{width:72px;}
+    .cell-input.long{width:140px;}
+    .status{color:#0a7a2f; font-size:12px;}
+    .danger{color:#b00020;}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h2>库存</h2>
+    <button onclick="window.location.href='/app'">库存</button>
+    <button onclick="window.location.href='/ingest'">去录入</button>
+    <button onclick="window.location.href='/search_page'">去搜索方案</button>
+    <button onclick="window.location.href='/search_ratio_page'">概率搜索</button>
+    <div class="spacer"></div>
+    <button onclick="logout()">退出登录</button>
+  </div>
+  <div class="muted">选择数据桶后，会展示桶内 items。登录 token 存在 localStorage。</div>
+
+  <div class="row">
+    <span class="status" id="updateMsg"></span>
+    <div class="spacer"></div>
+    <button onclick="updateAllItems()">保存全部</button>
+    <button onclick="refreshAll()">刷新</button>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label class="muted">选择数据桶：</label>
+      <select id="bucketSelect" onchange="onBucketChange()"></select>
+      <button onclick="deleteBucket()" class="danger">删除桶</button>
+      <span class="muted" id="bucketMeta"></span>
+    </div>
+
+    <div id="itemsArea"></div>
+  </div>
+
+<script>
+function token(){ return localStorage.getItem("token"); }
+function authHeaders(){
+  const t = token();
+  return t ? {"Authorization":"Bearer " + t} : {};
+}
+function ensureLogin(){
+  if(!token()){
+    window.location.href = "/login_page";
+    return false;
+  }
+  return true;
+}
+function logout(){
+  localStorage.removeItem("token");
+  window.location.href = "/login_page";
+}
+
+function fmt(n, d=6){
+  const x = Number(n);
+  if(Number.isNaN(x)) return "";
+  return x.toFixed(d);
+}
+
+async function apiGet(url){
+  const res = await fetch(url, {headers: authHeaders()});
+  if(res.status === 401){ logout(); return null; }
+  const data = await res.json();
+  if(!res.ok) throw new Error(data?.detail ?? JSON.stringify(data));
+  return data;
+}
+
+async function apiPatch(url, body){
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: {...authHeaders(), "Content-Type":"application/json"},
+    body: JSON.stringify(body)
+  });
+  if(res.status === 401){ logout(); return null; }
+  const data = await res.json();
+  if(!res.ok) throw new Error(data?.detail ?? JSON.stringify(data));
+  return data;
+}
+
+async function apiDelete(url){
+  const res = await fetch(url, {method: "DELETE", headers: authHeaders()});
+  if(res.status === 401){ logout(); return null; }
+  const data = await res.json();
+  if(!res.ok) throw new Error(data?.detail ?? JSON.stringify(data));
+  return data;
+}
+
+function setItemsEmpty(msg){
+  const area = document.getElementById("itemsArea");
+  area.innerHTML = `<div class="muted">${msg}</div>`;
+}
+
+function renderItems(items){
+  const area = document.getElementById("itemsArea");
+  if(!items || items.length === 0){
+    setItemsEmpty("该桶暂无 items。");
+    document.getElementById("bucketMeta").textContent = "";
+    return;
+  }
+
+  document.getElementById("bucketMeta").innerHTML =
+    `<span class="pill">items=${items.length}</span>`;
+
+  area.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>编号</th>
+          <th>名称</th>
+          <th>稀有度</th>
+          <th>箱子</th>
+          <th>in_min</th>
+          <th>in_max</th>
+          <th>float</th>
+          <th>x</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${items.map(it => `
+          <tr>
+            <td>
+              ${it.bucket_index ?? ""}
+            </td>
+            <td><input class="cell-input long" id="name_${it.id}" value="${it.name ?? ""}"></td>
+            <td><input class="cell-input short" id="rarity_${it.id}" value="${it.rarity ?? ""}"></td>
+            <td><input class="cell-input" id="crate_${it.id}" value="${it.crate ?? ""}"></td>
+            <td><input class="cell-input short" id="in_min_${it.id}" value="${fmt(it.in_min)}"></td>
+            <td><input class="cell-input short" id="in_max_${it.id}" value="${fmt(it.in_max)}"></td>
+            <td><input class="cell-input short" id="float_${it.id}" value="${fmt(it.float_value)}"></td>
+            <td>${fmt(it.x_value)}</td>
+            <td>
+              <button onclick="deleteItem(${it.id})" class="danger">删除</button>
+            </td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+async function loadBuckets(){
+  const buckets = await apiGet("/buckets");
+  if(!buckets) return [];
+
+  const sel = document.getElementById("bucketSelect");
+  sel.innerHTML = "";
+
+  if(buckets.length === 0){
+    sel.innerHTML = `<option value="">(暂无 bucket)</option>`;
+    setItemsEmpty("请先创建 bucket。");
+    return [];
+  }
+
+  buckets.forEach((b, i) => {
+    const opt = document.createElement("option");
+    opt.value = b.id;
+    opt.textContent = `#${b.id}  ${b.name}`;
+    sel.appendChild(opt);
+  });
+
+  // 记住上次选择
+  const last = localStorage.getItem("selected_bucket_id");
+  const exists = last && buckets.some(b => String(b.id) === String(last));
+  if(exists){
+    sel.value = last;
+  }else{
+    sel.value = String(buckets[0].id);
+    localStorage.setItem("selected_bucket_id", sel.value);
+  }
+
+  return buckets;
+}
+
+async function loadItems(bucketId){
+  if(!bucketId){
+    setItemsEmpty("请选择一个 bucket。");
+    return;
+  }
+  setItemsEmpty("加载 items...");
+  const items = await apiGet(`/items?bucket_id=${encodeURIComponent(bucketId)}`);
+  if(items){
+    setCurrentItems(items);
+    renderItems(items);
+  }else{
+    setCurrentItems([]);
+  }
+}
+
+async function onBucketChange(){
+  const sel = document.getElementById("bucketSelect");
+  const bucketId = sel.value;
+  localStorage.setItem("selected_bucket_id", bucketId);
+  await loadItems(bucketId);
+}
+
+async function refreshAll(){
+  await loadBuckets();
+  await onBucketChange();
+}
+
+let currentItems = [];
+
+function setCurrentItems(items){
+  currentItems = Array.isArray(items) ? items : [];
+}
+
+function getItemPayload(id){
+  const name = document.getElementById(`name_${id}`).value.trim();
+  const rarity = parseInt(document.getElementById(`rarity_${id}`).value, 10);
+  const crate = document.getElementById(`crate_${id}`).value.trim();
+  const in_min = parseFloat(document.getElementById(`in_min_${id}`).value);
+  const in_max = parseFloat(document.getElementById(`in_max_${id}`).value);
+  const float_value = parseFloat(document.getElementById(`float_${id}`).value);
+
+  if(Number.isNaN(rarity) || Number.isNaN(in_min) || Number.isNaN(in_max) || Number.isNaN(float_value)){
+    alert("请输入合法数字：rarity / in_min / in_max / float");
+    return null;
+  }
+  if(in_max <= in_min){
+    alert("in_max 必须大于 in_min");
+    return null;
+  }
+  if(float_value < in_min || float_value > in_max){
+    alert("float 不在 [in_min, in_max] 内");
+    return null;
+  }
+
+  return {
+    name: name || null,
+    rarity,
+    crate: crate || null,
+    in_min,
+    in_max,
+    float_value
+  };
+}
+
+async function updateAllItems(){
+  if(!currentItems.length){
+    alert("当前没有可保存的 items");
+    return;
+  }
+
+  const updates = [];
+  for(const it of currentItems){
+    const payload = getItemPayload(it.id);
+    if(!payload) return;
+    updates.push({id: it.id, payload});
+  }
+
+  try{
+    document.getElementById("updateMsg").textContent = "保存中...";
+    for(const {id, payload} of updates){
+      await apiPatch(`/items/${id}`, payload);
+    }
+    document.getElementById("updateMsg").textContent = "已保存";
+    await onBucketChange();
+  }catch(e){
+    document.getElementById("updateMsg").textContent = "";
+    alert(e?.message ?? e);
+  }
+}
+
+async function deleteItem(id){
+  if(!confirm("确定删除该 item 吗？")) return;
+  try{
+    document.getElementById("updateMsg").textContent = "删除中...";
+    await apiDelete(`/items/${id}`);
+    document.getElementById("updateMsg").textContent = "已删除";
+    await onBucketChange();
+  }catch(e){
+    document.getElementById("updateMsg").textContent = "";
+    alert(e?.message ?? e);
+  }
+}
+
+async function deleteBucket(){
+  const sel = document.getElementById("bucketSelect");
+  const bucketId = sel.value;
+  if(!bucketId){
+    alert("请选择一个 bucket");
+    return;
+  }
+  if(!confirm("确定删除该桶及桶内所有 items 吗？此操作不可恢复。")) return;
+  try{
+    document.getElementById("updateMsg").textContent = "删除桶中...";
+    await apiDelete(`/buckets/${bucketId}`);
+    localStorage.removeItem("selected_bucket_id");
+    document.getElementById("updateMsg").textContent = "桶已删除";
+    await refreshAll();
+  }catch(e){
+    document.getElementById("updateMsg").textContent = "";
+    alert(e?.message ?? e);
+  }
+}
+
+ensureLogin();
+refreshAll();
+</script>
+</body>
+</html>

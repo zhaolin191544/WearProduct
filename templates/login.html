@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>登录</title>
+  <style>
+    body{font-family:system-ui; padding:40px;}
+    .card{max-width:360px; border:1px solid #eee; border-radius:12px; padding:16px;}
+    input{width:100%; padding:10px; border:1px solid #ddd; border-radius:10px; margin:8px 0;}
+    button{padding:10px 12px; border:1px solid #ddd; border-radius:10px; background:#fff; cursor:pointer;}
+    .err{color:#b00020; white-space:pre-wrap; margin-top:10px;}
+    .topbar{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:16px;}
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h3>登录</h3>
+    <input id="username" placeholder="用户名" />
+    <input id="password" type="password" placeholder="密码" />
+    <button onclick="login()">登录</button>
+    <div class="err" id="err"></div>
+  </div>
+
+<script>
+async function login(){
+  document.getElementById("err").textContent = "";
+
+  const username = document.getElementById("username").value.trim();
+  const password = document.getElementById("password").value;
+
+  const body = new URLSearchParams();
+  body.append("username", username);
+  body.append("password", password);
+
+  const res = await fetch("/login", {
+    method: "POST",
+    headers: {"Content-Type":"application/x-www-form-urlencoded"},
+    body: body.toString()
+  });
+
+  const data = await res.json();
+
+  if(!res.ok){
+    document.getElementById("err").textContent = data?.detail ?? JSON.stringify(data);
+    return;
+  }
+
+  localStorage.setItem("token", data.access_token);
+  window.location.href = "/app";
+}
+</script>
+</body>
+</html>

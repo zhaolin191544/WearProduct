@@ -1,0 +1,463 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>OCR 录入</title>
+  <style>
+    body{font-family:system-ui; padding:24px; color:#111;}
+    h2{margin:0 0 8px 0;}
+    .muted{color:#666; font-size:12px;}
+    .row{display:flex; gap:10px; align-items:center; margin:10px 0;}
+    .grid{display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:12px;}
+    .card{border:1px solid #eee; border-radius:12px; padding:12px;}
+    input,select{padding:8px 10px; border:1px solid #ddd; border-radius:10px;}
+    button{padding:8px 10px; border:1px solid #ddd; border-radius:10px; background:#fff; cursor:pointer;}
+    button:hover{background:#f6f6f6;}
+    canvas{
+  border:1px solid #eee;
+  border-radius:12px;        /* 关键：铺满卡片 */
+  height: auto;       /* 保持比例 */
+  display:block;
+}
+    table{width:100%; border-collapse:collapse; margin-top:10px;}
+    th,td{border-top:1px solid #efefef; padding:8px 6px; text-align:left; font-size:13px;}
+    th{color:#555; font-weight:700; font-size:12px;}
+    .pill{display:inline-block; padding:2px 8px; border-radius:999px; background:#f3f3f3; font-size:12px; color:#333; margin-right:6px;}
+    .err{color:#b00020; white-space:pre-wrap;}
+    .ok{color:#0a7a2f;}
+    .topbar{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h2 style="margin:0;">OCR / 手动录入（批次入库）</h2>
+    <button onclick="goApp()">库存</button>
+    <button onclick="goIngest()">去录入</button>
+    <button onclick="goSearch()">去搜索方案</button>
+    <button onclick="window.location.href='/search_ratio_page'">概率搜索</button>
+    <button onclick="logout()">退出登录</button>
+  </div>
+  <div class="muted">流程：选择桶 → OCR 或手填 → 添加到批次 → 提交入库</div>
+  <div class="row">
+    <span class="muted" id="msg"></span>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label class="muted">选择数据桶：</label>
+      <select id="bucketSelect"></select>
+      <input id="newBucketName" placeholder="新桶名称"/>
+      <button onclick="createBucket()">新建桶</button>
+      <span class="muted" id="bucketMeta"></span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3 style="margin:0 0 8px 0;">OCR 录入（上传 + 框选）</h3>
+      <div class="muted">建议只框选包含磨损数字的区域，OCR 会更准。</div>
+      <div class="row">
+        <input type="file" id="file" accept="image/*" onchange="loadImage(event)">
+        <button onclick="runOCR()">OCR 框选区域</button>
+      </div>
+      <canvas id="cv" width="640" height="360"></canvas>
+      <div class="row">
+        <span class="muted">OCR 结果：</span>
+        <span id="ocrFloats"></span>
+      </div>
+      <div class="muted" id="ocrText"></div>
+      <div class="err" id="ocrErr"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 8px 0;">手动填写 / OCR 填入</h3>
+      <div class="row">
+        <input id="float" placeholder="float (如 0.09341)" />
+        <input id="name" placeholder="name (可选)" />
+      </div>
+      <div class="row">
+        <input id="crate" placeholder="crate (可选)" />
+      </div>
+      <div class="row">
+        <input id="in_min" placeholder="in_min" value="0.0"/>
+        <input id="in_max" placeholder="in_max" value="1.0"/>
+      </div>
+      <div class="row">
+        <button onclick="addToBatch()">加入本次批次</button>
+        <span class="muted" id="batchMeta"></span>
+      </div>
+
+      <h3 style="margin:16px 0 8px 0;">本次批次</h3>
+      <div id="batchArea"></div>
+
+      <div class="row">
+        <button onclick="submitBatch()">提交入库</button>
+        <button onclick="clearBatch()">清空批次</button>
+        <span id="submitMsg" class="muted"></span>
+      </div>
+
+      <div class="err" id="submitErr"></div>
+    </div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+
+function token(){ return localStorage.getItem("token"); }
+function authHeaders(){
+  const t = token();
+  return t ? {"Authorization":"Bearer " + t} : {};
+}
+function ensureLogin(){
+  if(!token()){
+    window.location.href = "/login_page";
+    return false;
+  }
+  return true;
+}
+
+function setFloatInput(v){
+  document.getElementById("float").value = String(v);
+}
+
+function pickBestFloat(candidates){
+  // candidates: number[]
+  // 经验规则：磨损通常在 (0,1) 内；如果多个，优先选择：
+  // 1) 在 0~1
+  // 2) 小数位较多（更像磨损）
+  // 3) 更接近 0.0~0.3（可按你实际习惯调整）
+  const xs = candidates.filter(x => x > 0 && x < 1);
+  if(xs.length === 0) return null;
+
+  // 你也可以把“更接近 0.1”改成 “更接近 0.15/0.2”
+  const target = 0.15;
+  xs.sort((a,b) => Math.abs(a-target) - Math.abs(b-target));
+  return xs[0];
+}
+
+function logout(){ localStorage.removeItem("token"); window.location.href="/login_page"; }
+function goApp(){ window.location.href="/app"; }
+function goIngest(){ window.location.href="/ingest"; }
+function goSearch(){ window.location.href="/search_page"; }
+
+async function apiGet(url){
+  const res = await fetch(url, {headers: authHeaders()});
+  if(res.status === 401){ logout(); return null; }
+  const data = await res.json();
+  if(!res.ok) throw new Error(data?.detail ?? JSON.stringify(data));
+  return data;
+}
+async function apiPost(url, body, isForm=false){
+  const opt = {method:"POST", headers: authHeaders()};
+  if(isForm){
+    opt.body = body;
+  }else{
+    opt.headers = {...opt.headers, "Content-Type":"application/json"};
+    opt.body = JSON.stringify(body);
+  }
+  const res = await fetch(url, opt);
+  if(res.status === 401){ logout(); return null; }
+  const data = await res.json();
+  if(!res.ok) throw new Error(data?.detail ?? JSON.stringify(data));
+  return data;
+}
+
+let buckets = [];
+let batch = []; // items to submit
+
+async function loadBuckets(){
+  buckets = await apiGet("/buckets") || [];
+  const sel = document.getElementById("bucketSelect");
+  sel.innerHTML = "";
+  if(buckets.length === 0){
+    sel.innerHTML = `<option value="">(暂无 bucket)</option>`;
+    document.getElementById("bucketMeta").textContent = "";
+    return;
+  }
+  buckets.forEach(b=>{
+    const opt = document.createElement("option");
+    opt.value = b.id;
+    opt.textContent = `#${b.id} ${b.name}`;
+    sel.appendChild(opt);
+  });
+
+  const last = localStorage.getItem("selected_bucket_id");
+  const exists = last && buckets.some(b => String(b.id) === String(last));
+  sel.value = exists ? last : String(buckets[0].id);
+  localStorage.setItem("selected_bucket_id", sel.value);
+  document.getElementById("bucketMeta").innerHTML = `<span class="pill">buckets=${buckets.length}</span>`;
+}
+
+async function createBucket(){
+  const name = document.getElementById("newBucketName").value.trim();
+  if(!name) return;
+  const res = await fetch("/buckets?name=" + encodeURIComponent(name), {method:"POST", headers: authHeaders()});
+  const data = await res.json();
+  if(!res.ok){
+    document.getElementById("msg").textContent = data?.detail ?? JSON.stringify(data);
+    return;
+  }
+  document.getElementById("newBucketName").value = "";
+  await loadBuckets();
+  document.getElementById("bucketSelect").value = String(data.id);
+  localStorage.setItem("selected_bucket_id", String(data.id));
+  document.getElementById("msg").textContent = "新建桶成功";
+}
+
+function renderBatch(){
+  document.getElementById("batchMeta").textContent = `当前批次 ${batch.length} 条`;
+  const area = document.getElementById("batchArea");
+  if(batch.length === 0){
+    area.innerHTML = `<div class="muted">暂无数据</div>`;
+    return;
+  }
+  area.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>#</th><th>float</th><th>name</th><th>in_min</th><th>in_max</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${batch.map((it, i)=>`
+          <tr>
+            <td>${i+1}</td>
+            <td>${it.float_value}</td>
+            <td>${it.name ?? ""}</td>
+            <td>${it.in_min}</td>
+            <td>${it.in_max}</td>
+            <td><button onclick="removeOne(${i})">删除</button></td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+function removeOne(i){ batch.splice(i,1); renderBatch(); }
+function clearBatch(){ batch = []; renderBatch(); }
+
+function addToBatch(){
+  const f = parseFloat(document.getElementById("float").value);
+  const in_min = parseFloat(document.getElementById("in_min").value);
+  const in_max = parseFloat(document.getElementById("in_max").value);
+  const name = (document.getElementById("name")?.value || "").trim() || null;
+  const crate = (document.getElementById("crate")?.value || "").trim() || null;
+
+  if(Number.isNaN(f) || Number.isNaN(in_min) || Number.isNaN(in_max)){
+    alert("请输入合法数字：float / in_min / in_max");
+    return;
+  }
+  if(in_max <= in_min){
+    alert("in_max 必须大于 in_min");
+    return;
+  }
+  if(f < in_min || f > in_max){
+    alert("float 不在 [in_min, in_max] 内");
+    return;
+  }
+
+  // ✅ 客户不输入 rarity/crate，但你的系统通常仍需要 rarity
+  // 这里给一个默认值（比如 1），后面你可以从 bucket 设置或系统配置里推断
+  const rarity = 1;
+
+  const nextItem = { float_value: f, rarity, in_min, in_max, crate, name };
+  const prevItem = batch.length > 0 ? batch[batch.length - 1] : null;
+  if (
+    prevItem &&
+    prevItem.float_value === nextItem.float_value &&
+    prevItem.in_min === nextItem.in_min &&
+    prevItem.in_max === nextItem.in_max &&
+    prevItem.name === nextItem.name &&
+    prevItem.crate === nextItem.crate
+  ) {
+    const confirmed = confirm("和前面一个数据相同 请确认");
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  batch.push(nextItem);
+  renderBatch();
+}
+
+
+async function submitBatch(){
+  document.getElementById("submitErr").textContent = "";
+  document.getElementById("submitMsg").textContent = "";
+  const sel = document.getElementById("bucketSelect");
+  const bucketId = parseInt(sel.value);
+  if(Number.isNaN(bucketId)){
+    document.getElementById("submitErr").textContent = "请选择 bucket";
+    return;
+  }
+  if(batch.length === 0){
+    document.getElementById("submitErr").textContent = "批次为空";
+    return;
+  }
+  try{
+    const data = await apiPost("/items/batch", {bucket_id: bucketId, items: batch});
+    document.getElementById("submitMsg").innerHTML = `<span class="ok">入库成功：created=${data.created}</span>`;
+    clearBatch();
+  }catch(e){
+    document.getElementById("submitErr").textContent = e?.message ?? e;
+  }
+}
+
+/* ---------------- OCR：上传 + 框选裁剪 ---------------- */
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+let img = null;
+let selRect = null;
+let dragging = false;
+let start = null;
+
+function loadImage(ev){
+  const file = ev.target.files[0];
+  if(!file) return;
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    img = new Image();
+    img.onload = () => {
+      // 适配 canvas 尺寸（保持比例，绘制到 canvas）
+      const maxW = 1100, maxH = 1200;
+      let w = img.width, h = img.height;
+      const r = Math.min(maxW / w, maxH / h, 1);
+      w = Math.floor(w * r);
+      h = Math.floor(h * r);
+      cv.width = w; cv.height = h;
+      ctx.drawImage(img, 0, 0, w, h);
+      selRect = null;
+      drawOverlay();
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function drawOverlay(){
+  if(!img) return;
+  // 重绘底图
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.drawImage(img, 0, 0, cv.width, cv.height);
+
+  if(selRect){
+    const {x,y,w,h} = selRect;
+    ctx.strokeStyle = "red";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x,y,w,h);
+  }
+}
+
+cv.addEventListener("mousedown", (e)=>{
+  if(!img) return;
+  dragging = true;
+  const r = cv.getBoundingClientRect();
+  start = {x: e.clientX - r.left, y: e.clientY - r.top};
+  selRect = {x:start.x, y:start.y, w:0, h:0};
+  drawOverlay();
+});
+cv.addEventListener("mousemove", (e)=>{
+  if(!dragging || !img) return;
+  const r = cv.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  const y = e.clientY - r.top;
+  selRect.w = x - start.x;
+  selRect.h = y - start.y;
+  // normalize
+  const nx = Math.min(selRect.x, selRect.x + selRect.w);
+  const ny = Math.min(selRect.y, selRect.y + selRect.h);
+  const nw = Math.abs(selRect.w);
+  const nh = Math.abs(selRect.h);
+  selRect = {x:nx, y:ny, w:nw, h:nh};
+  drawOverlay();
+});
+cv.addEventListener("mouseup", ()=>{
+  dragging = false;
+  drawOverlay();
+});
+
+async function runOCR(){
+  document.getElementById("ocrErr").textContent = "";
+  document.getElementById("ocrText").textContent = "";
+  const floatsBox = document.getElementById("ocrFloats");
+  floatsBox.innerHTML = "";
+
+  if(!img){
+    document.getElementById("ocrErr").textContent = "请先上传图片";
+    return;
+  }
+  if(!selRect || selRect.w < 5 || selRect.h < 5){
+    document.getElementById("ocrErr").textContent = "请在图片上拖拽框选区域";
+    return;
+  }
+
+  // 裁剪成小图
+  const tmp = document.createElement("canvas");
+  tmp.width = Math.floor(selRect.w);
+  tmp.height = Math.floor(selRect.h);
+  const tctx = tmp.getContext("2d");
+  tctx.drawImage(cv, selRect.x, selRect.y, selRect.w, selRect.h, 0, 0, tmp.width, tmp.height);
+
+  try{
+    document.getElementById("ocrText").textContent = "OCR 识别中...（首次会慢一点）";
+
+    const { data } = await Tesseract.recognize(tmp, "eng", {
+      logger: m => {
+        if(m.status){
+          const p = m.progress ? ` ${(m.progress*100).toFixed(0)}%` : "";
+          document.getElementById("ocrText").textContent = `OCR ${m.status}${p}`;
+        }
+      }
+    });
+
+    const text = (data && data.text) ? data.text : "";
+    document.getElementById("ocrText").textContent = text.slice(0, 300);
+
+    const re = /\b0\.\d+\b/g;
+    const found = (text.match(re) || []);
+
+    // 转数值、去重、过滤到 (0,1)
+    const floats = Array.from(new Set(
+      found.map(s => parseFloat(s)).filter(x => !Number.isNaN(x) && x > 0 && x < 1)
+    )).sort((a,b)=>a-b);
+
+    if (floats.length === 0) {
+      document.getElementById("ocrErr").textContent = "未识别到 float（建议框更紧 / 图更清晰）";
+      return;
+    }
+
+    // ✅ 成功后清掉错误提示
+    document.getElementById("ocrErr").textContent = "";
+
+    // ✅ 自动填入：默认取第一个（或你自己 pickBestFloat）
+    const best = (floats.length === 1) ? floats[0] : pickBestFloat(floats);
+    setFloatInput(best);
+
+    // ✅ 仍展示候选，点击可覆盖
+    const floatsBox = document.getElementById("ocrFloats");
+    floatsBox.innerHTML = floats.map(f => `
+      <span class="pill" style="cursor:pointer" data-f="${f}">
+        ${f}${f===best ? " ✓" : ""}
+      </span>
+    `).join("");
+
+    floatsBox.querySelectorAll(".pill").forEach(el=>{
+      el.onclick = () => setFloatInput(el.getAttribute("data-f"));
+    });
+  }catch(e){
+    document.getElementById("ocrErr").textContent = (e && e.message) ? e.message : String(e);
+  }
+}
+
+
+function useFloat(f){
+  document.getElementById("float").value = String(f);
+}
+
+ensureLogin();
+loadBuckets();
+renderBatch();
+</script>
+</body>
+</html>

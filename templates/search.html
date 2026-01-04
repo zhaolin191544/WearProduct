@@ -1,0 +1,319 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>搜索方案</title>
+  <style>
+    body{font-family:system-ui; margin:24px; color:#111;}
+    h2{margin:0 0 10px 0;}
+    .hint{color:#555; margin:0 0 16px 0; line-height:1.35;}
+    .panel{border:1px solid #e5e5e5; border-radius:12px; padding:14px; margin:14px 0;}
+    .grid{display:grid; grid-template-columns: 120px 120px 120px 120px 120px; gap:10px; align-items:center;}
+    .grid .hdr{font-size:12px; color:#666; font-weight:600;}
+    input,select{width:110px; padding:6px 8px; border:1px solid #dcdcdc; border-radius:8px;}
+    button{padding:8px 12px; border:1px solid #ddd; border-radius:10px; background:#fff; cursor:pointer;}
+    button:hover{background:#f6f6f6;}
+    .row{display:contents;}
+    .rownum{font-size:12px; color:#777;}
+    .actions{display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;}
+    .msg{margin-top:10px; color:#444;}
+    .slot{border:1px solid #ededed; border-radius:12px; padding:12px; margin:12px 0;}
+    .slot h3{margin:0 0 8px 0; font-size:16px;}
+    .sub{color:#666; font-size:12px; margin:0 0 10px 0;}
+    table{width:100%; border-collapse:collapse; margin:8px 0 0 0;}
+    th,td{border-top:1px solid #efefef; padding:8px 6px; text-align:left; font-size:13px;}
+    th{color:#555; font-weight:700; font-size:12px;}
+    .pill{display:inline-block; padding:2px 8px; border-radius:999px; background:#f3f3f3; font-size:12px; color:#333; margin-left:8px;}
+    .plan{margin-top:10px; padding:10px; border:1px solid #f0f0f0; border-radius:12px; background:#fafafa;}
+    .planTitle{display:flex; gap:10px; align-items:center; justify-content:space-between;}
+    .muted{color:#777; font-size:12px;}
+    .err{color:#b00020; white-space:pre-wrap;}
+    .topbar{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h2 style="margin-right:10px;">搜索方案（10 槽位）</h2>
+    <button onclick="goApp()">库存</button>
+    <button onclick="goIngest()">去录入</button>
+    <button onclick="goSearch()">搜索方案</button>
+    <button onclick="goSearch1()">概率搜索</button>
+    <button onclick="logout()">退出登录</button>
+  </div>
+
+  <p class="hint">
+    规则：同稀有度（材料 rarity 必须一致），允许混箱。<br/>
+    多槽位是 AND：所有槽位共同限制同一个“产物集合”的 mean(x) 交集。<br/>
+    输出展示“配料方案”，每件材料标明磨损与上下限；找到一个方案后会排除用料，继续搜下一个（无 topk，上限看桶里材料）。
+  </p>
+
+  <div class="panel">
+    <div class="row" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <label class="muted">选择数据桶：</label>
+      <select id="bucketSelect" onchange="onBucketChange()"></select>
+      <span class="muted" id="bucketMeta"></span>
+    </div>
+
+    <div class="grid" id="grid" style="margin-top:12px;">
+      <div class="hdr">槽位</div>
+      <div class="hdr">out_min</div>
+      <div class="hdr">out_max</div>
+      <div class="hdr">期望 low</div>
+      <div class="hdr">期望 high</div>
+    </div>
+
+    <div class="actions">
+      <button onclick="addRow()">+ 增加槽位</button>
+      <button onclick="removeRow()">- 删除最后一行</button>
+      <button onclick="run()">搜索方案</button>
+      <span class="muted" id="meta"></span>
+    </div>
+
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div id="out"></div>
+
+<script>
+function token(){ return localStorage.getItem("token"); }
+function authHeaders(){
+  const t = token();
+  return t ? {"Authorization":"Bearer " + t} : {};
+}
+function ensureLogin(){
+  if(!token()){
+    window.location.href = "/login_page";
+    return false;
+  }
+  return true;
+}
+function logout(){ localStorage.removeItem("token"); window.location.href="/login_page"; }
+function goApp(){ window.location.href="/app"; }
+function goIngest(){ window.location.href="/ingest"; }
+function goSearch(){ window.location.href="/search_page"; }
+function goSearch1(){ window.location.href="/search_ratio_page"; }
+
+let buckets = [];
+async function apiGet(url){
+  const res = await fetch(url, {headers: authHeaders()});
+  if(res.status === 401){ logout(); return null; }
+  const data = await res.json();
+  if(!res.ok) throw new Error(data?.detail ?? JSON.stringify(data));
+  return data;
+}
+
+let rows = 1;
+
+function rowTemplate(i, preset){
+  const v = preset || {out_min:"0.00", out_max:"1.00", target_low:"0.20", target_high:"0.40"};
+  return `
+    <div class="row">
+      <div class="rownum">#${i+1}</div>
+      <input id="out_min_${i}" value="${v.out_min}">
+      <input id="out_max_${i}" value="${v.out_max}">
+      <input id="target_low_${i}" value="${v.target_low}">
+      <input id="target_high_${i}" value="${v.target_high}">
+    </div>`;
+}
+
+function render(){
+  const grid = document.getElementById("grid");
+  grid.innerHTML = `
+    <div class="hdr">槽位</div>
+    <div class="hdr">out_min</div>
+    <div class="hdr">out_max</div>
+    <div class="hdr">期望 low</div>
+    <div class="hdr">期望 high</div>
+  `;
+  for(let i=0;i<rows;i++){
+    const preset = (i===0)
+      ? {out_min:"0.00", out_max:"1.00", target_low:"0.20", target_high:"0.40"}
+      : {out_min:"0.00", out_max:"1.00", target_low:"0.20", target_high:"0.40"};
+    grid.insertAdjacentHTML("beforeend", rowTemplate(i, preset));
+  }
+}
+function addRow(){ if(rows<10){ rows++; render(); } }
+function removeRow(){ if(rows>1){ rows--; render(); } }
+
+function fmt(n, d=6){
+  const x = Number(n);
+  if(Number.isNaN(x)) return String(n);
+  return x.toFixed(d);
+}
+function cratesText(crates){
+  const parts = Object.entries(crates).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k||"(none)"}:${v}`);
+  return parts.join("  ");
+}
+
+async function loadBuckets(){
+  buckets = await apiGet("/buckets") || [];
+  const sel = document.getElementById("bucketSelect");
+  sel.innerHTML = "";
+
+  if(buckets.length === 0){
+    sel.innerHTML = `<option value="">(暂无 bucket)</option>`;
+    document.getElementById("bucketMeta").textContent = "";
+    return;
+  }
+
+  buckets.forEach((b) => {
+    const opt = document.createElement("option");
+    opt.value = b.id;
+    opt.textContent = `#${b.id} ${b.name}`;
+    sel.appendChild(opt);
+  });
+
+  const last = localStorage.getItem("selected_bucket_id");
+  const exists = last && buckets.some(b => String(b.id) === String(last));
+  sel.value = exists ? last : String(buckets[0].id);
+  localStorage.setItem("selected_bucket_id", sel.value);
+  document.getElementById("bucketMeta").innerHTML = `<span class="pill">buckets=${buckets.length}</span>`;
+}
+
+function onBucketChange(){
+  const sel = document.getElementById("bucketSelect");
+  localStorage.setItem("selected_bucket_id", sel.value);
+}
+
+async function run(){
+  const out = document.getElementById("out");
+  const msg = document.getElementById("msg");
+  out.innerHTML = "";
+  msg.textContent = "请求中...";
+
+  try{
+    const bucket_id = parseInt(document.getElementById("bucketSelect").value);
+    if(Number.isNaN(bucket_id)) throw new Error("请选择一个数据桶");
+
+    const products = [];
+    for(let i=0;i<rows;i++){
+      const out_min = parseFloat(document.getElementById(`out_min_${i}`).value);
+      const out_max = parseFloat(document.getElementById(`out_max_${i}`).value);
+      const target_low = parseFloat(document.getElementById(`target_low_${i}`).value);
+      const target_high = parseFloat(document.getElementById(`target_high_${i}`).value);
+      if([out_min,out_max,target_low,target_high].some(x=>Number.isNaN(x))){
+        throw new Error(`槽位 #${i+1} 有非数字输入`);
+      }
+      products.push({out_min,out_max,target_low,target_high});
+    }
+
+    const res = await fetch("/search", {
+      method:"POST",
+      headers:{...authHeaders(), "Content-Type":"application/json"},
+      body: JSON.stringify({bucket_id, products})
+    });
+
+    const text = await res.text();
+    if(!res.ok){
+      msg.innerHTML = `<div class="err">HTTP ${res.status}\n${text}</div>`;
+      return;
+    }
+    const data = JSON.parse(text);
+    msg.textContent = `完成：输入槽位 ${data.input_slots}，返回方案 ${data.plans.length}`;
+
+    const joint = data.joint_mean_x_range;
+    const head = document.createElement("div");
+    head.className = "slot";
+    head.innerHTML = `
+      <h3>联合限制（所有槽位 AND）</h3>
+      <p class="sub">交集 mean(x) 区间：${fmt(joint.L,6)} ~ ${fmt(joint.U,6)}（闭区间）｜槽位数：${data.input_slots}</p>
+      <table>
+        <thead>
+          <tr>
+            <th>槽位</th><th>out_min</th><th>out_max</th><th>期望 low</th><th>期望 high</th><th>映射 L</th><th>映射 U</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.slot_ranges.map(r => `
+            <tr>
+              <td>#${r.slot_index+1}</td>
+              <td>${fmt(r.out_min,6)}</td>
+              <td>${fmt(r.out_max,6)}</td>
+              <td>${fmt(r.target_low,6)}</td>
+              <td>${fmt(r.target_high,6)}</td>
+              <td>${fmt(r.L,6)}</td>
+              <td>${fmt(r.U,6)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+    out.appendChild(head);
+
+    if(data.plans.length === 0){
+      const empty = document.createElement("div");
+      empty.className = "slot";
+      empty.innerHTML = `<div class="muted">没有找到可行方案。</div>`;
+      out.appendChild(empty);
+      return;
+    }
+
+    data.plans.forEach((plan, idx) => {
+      const div = document.createElement("div");
+      div.className = "slot";
+      div.innerHTML = `
+        <h3>方案 ${idx+1} <span class="pill">rarity=${plan.rarity}</span></h3>
+        <p class="sub">mean(x)=${fmt(plan.mean_x,6)} ｜箱子分布：<code>${cratesText(plan.crates)}</code></p>
+
+        <div class="plan">
+          <div class="planTitle">
+            <div><b>各槽位产物磨损回代</b></div>
+            <div class="muted">✓=命中（闭区间）</div>
+          </div>
+          <table>
+            <thead><tr><th>槽位</th><th>out_float</th><th>命中</th></tr></thead>
+            <tbody>
+              ${plan.slot_outputs.map(o => `
+                <tr>
+                  <td>#${o.slot_index+1}</td>
+                  <td>${fmt(o.out_float,6)}</td>
+                  <td>${o.hit ? "✓" : "✗"}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="plan">
+          <div class="planTitle">
+            <div><b>配料（10 件，同稀有度）</b></div>
+            <div class="muted">每件标明磨损与上下限</div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th><th>材料</th><th>箱子</th><th>稀有度</th>
+                <th>in_min</th><th>in_max</th><th>磨损(float)</th><th>x</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${plan.materials.map((m, j)=>`
+                <tr>
+                  <td>${j+1}</td>
+                  <td>${m.name}</td>
+                  <td>${m.crate || ""}</td>
+                  <td>${m.rarity}</td>
+                  <td>${fmt(m.in_min,6)}</td>
+                  <td>${fmt(m.in_max,6)}</td>
+                  <td>${fmt(m.in_float,6)}</td>
+                  <td>${fmt(m.x,6)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+      out.appendChild(div);
+    });
+
+  }catch(e){
+    msg.innerHTML = `<div class="err">${e?.message ?? e}</div>`;
+  }
+}
+
+ensureLogin();
+render();
+loadBuckets();
+</script>
+</body>
+</html>

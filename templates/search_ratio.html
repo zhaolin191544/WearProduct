@@ -1,0 +1,487 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>概率搜索（箱子比例优先）</title>
+  <style>
+    body{font-family:system-ui; margin:24px; color:#111;}
+    h2{margin:0 0 10px 0;}
+    .hint{color:#555; margin:0 0 16px 0; line-height:1.35;}
+    .panel{border:1px solid #e5e5e5; border-radius:12px; padding:14px; margin:14px 0;}
+    .grid{display:grid; grid-template-columns: 120px 120px 120px 120px 120px; gap:10px; align-items:center;}
+    .grid .hdr{font-size:12px; color:#666; font-weight:600;}
+    input,select{width:110px; padding:6px 8px; border:1px solid #dcdcdc; border-radius:8px;}
+    button{padding:8px 12px; border:1px solid #ddd; border-radius:10px; background:#fff; cursor:pointer;}
+    button:hover{background:#f6f6f6;}
+    .row{display:contents;}
+    .rownum{font-size:12px; color:#777;}
+    .actions{display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;}
+    .msg{margin-top:10px; color:#444;}
+    .slot{border:1px solid #ededed; border-radius:12px; padding:12px; margin:12px 0;}
+    .slot h3{margin:0 0 8px 0; font-size:16px;}
+    .sub{color:#666; font-size:12px; margin:0 0 10px 0;}
+    table{width:100%; border-collapse:collapse; margin:8px 0 0 0;}
+    th,td{border-top:1px solid #efefef; padding:8px 6px; text-align:left; font-size:13px;}
+    th{color:#555; font-weight:700; font-size:12px;}
+    .pill{display:inline-block; padding:2px 8px; border-radius:999px; background:#f3f3f3; font-size:12px; color:#333; margin-left:8px;}
+    .plan{margin-top:10px; padding:10px; border:1px solid #f0f0f0; border-radius:12px; background:#fafafa;}
+    .planTitle{display:flex; gap:10px; align-items:center; justify-content:space-between;}
+    .muted{color:#777; font-size:12px;}
+    .err{color:#b00020; white-space:pre-wrap;}
+    .ok{color:#0a7a2f;}
+    .topbar{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
+
+    .ratioRow{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:8px;}
+    .ratioGrid{display:grid; grid-template-columns: 60px 1fr 100px 100px 110px; gap:10px; align-items:center;}
+    .ratioGrid .hdr{font-size:12px; color:#666; font-weight:600;}
+    .wide{width:260px;}
+    code{background:#fff; padding:2px 6px; border-radius:8px; border:1px solid #eee;}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h2 style="margin-right:10px;">概率搜索（箱子比例优先）</h2>
+    <button onclick="goApp()">库存</button>
+    <button onclick="goIngest()">去录入</button>
+    <button onclick="goSearch()">普通搜索</button>
+    <button onclick="goSearchRatio()">概率搜索</button>
+    <button onclick="logout()">退出登录</button>
+  </div>
+
+  <p class="hint">
+    规则：同稀有度（材料 rarity 必须一致），允许混箱。<br/>
+    与普通搜索不同：在满足磨损条件基础上，尽量让“配料 10 件”中来自各箱子的数量比例接近你填写的权重（例如 2:0:0:8）。<br/>
+    找到一个方案后会排除用料继续搜下一个（提高材料利用率）。
+  </p>
+
+  <div class="panel">
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <label class="muted">选择数据桶：</label>
+      <select id="bucketSelect" onchange="onBucketChange()"></select>
+      <span class="muted" id="bucketMeta"></span>
+    </div>
+
+    <div style="margin-top:12px;">
+      <div class="muted">箱子比例（权重）</div>
+      <div class="ratioRow">
+        <input id="ratioText" class="wide" placeholder="快速输入：例如 2:0:0:8">
+        <button onclick="applyRatioText()">应用</button>
+        <span class="muted" id="ratioTip"></span>
+      </div>
+
+      <div class="ratioGrid" id="ratioGrid" style="margin-top:10px;">
+        <div class="hdr">变量</div>
+        <div class="hdr">箱子</div>
+        <div class="hdr">桶内数量</div>
+        <div class="hdr">权重</div>
+        <div class="hdr">目标(10件)</div>
+      </div>
+    </div>
+
+    <hr style="border:none;border-top:1px solid #eee;margin:14px 0;"/>
+
+    <div class="grid" id="grid">
+      <div class="hdr">槽位</div>
+      <div class="hdr">out_min</div>
+      <div class="hdr">out_max</div>
+      <div class="hdr">期望 low</div>
+      <div class="hdr">期望 high</div>
+    </div>
+
+    <div class="actions">
+      <button onclick="addRow()">+ 增加槽位</button>
+      <button onclick="removeRow()">- 删除最后一行</button>
+      <button onclick="run()">搜索方案</button>
+      <span class="muted" id="meta"></span>
+    </div>
+
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div id="out"></div>
+
+<script>
+/* ---------------- 基础：auth + nav ---------------- */
+function token(){ return localStorage.getItem("token"); }
+function authHeaders(){
+  const t = token();
+  return t ? {"Authorization":"Bearer " + t} : {};
+}
+function ensureLogin(){
+  if(!token()){
+    window.location.href = "/login_page";
+    return false;
+  }
+  return true;
+}
+function logout(){ localStorage.removeItem("token"); window.location.href="/login_page"; }
+function goApp(){ window.location.href="/app"; }
+function goIngest(){ window.location.href="/ingest"; }
+function goSearch(){ window.location.href="/search_page"; }
+function goSearchRatio(){ window.location.href="/search_ratio_page"; }
+
+async function apiGet(url){
+  const res = await fetch(url, {headers: authHeaders()});
+  if(res.status === 401){ logout(); return null; }
+  const data = await res.json();
+  if(!res.ok) throw new Error(data?.detail ?? JSON.stringify(data));
+  return data;
+}
+
+/* ---------------- UI helper ---------------- */
+function fmt(n, d=6){
+  const x = Number(n);
+  if(Number.isNaN(x)) return String(n);
+  return x.toFixed(d);
+}
+function crateLabel(c){
+  return (c === "" || c == null) ? "(none)" : c;
+}
+function cratesText(crates){
+  const parts = Object.entries(crates || {}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${crateLabel(k)}:${v}`);
+  return parts.join("  ");
+}
+
+/* ---------------- 槽位输入（10槽位）---------------- */
+let rows = 1;
+
+function rowTemplate(i){
+  const v = {out_min:"0.00", out_max:"1.00", target_low:"0.20", target_high:"0.40"};
+  return `
+    <div class="row">
+      <div class="rownum">#${i+1}</div>
+      <input id="out_min_${i}" value="${v.out_min}">
+      <input id="out_max_${i}" value="${v.out_max}">
+      <input id="target_low_${i}" value="${v.target_low}">
+      <input id="target_high_${i}" value="${v.target_high}">
+    </div>`;
+}
+function renderSlots(){
+  const grid = document.getElementById("grid");
+  grid.innerHTML = `
+    <div class="hdr">槽位</div>
+    <div class="hdr">out_min</div>
+    <div class="hdr">out_max</div>
+    <div class="hdr">期望 low</div>
+    <div class="hdr">期望 high</div>
+  `;
+  for(let i=0;i<rows;i++){
+    grid.insertAdjacentHTML("beforeend", rowTemplate(i));
+  }
+}
+function addRow(){ if(rows<10){ rows++; renderSlots(); } }
+function removeRow(){ if(rows>1){ rows--; renderSlots(); } }
+
+/* ---------------- bucket 下拉 ---------------- */
+let buckets = [];
+
+async function loadBuckets(){
+  buckets = await apiGet("/buckets") || [];
+  const sel = document.getElementById("bucketSelect");
+  sel.innerHTML = "";
+
+  if(buckets.length === 0){
+    sel.innerHTML = `<option value="">(暂无 bucket)</option>`;
+    document.getElementById("bucketMeta").textContent = "";
+    return;
+  }
+
+  buckets.forEach((b) => {
+    const opt = document.createElement("option");
+    opt.value = b.id;
+    opt.textContent = `#${b.id} ${b.name}`;
+    sel.appendChild(opt);
+  });
+
+  const last = localStorage.getItem("selected_bucket_id");
+  const exists = last && buckets.some(b => String(b.id) === String(last));
+  sel.value = exists ? last : String(buckets[0].id);
+  localStorage.setItem("selected_bucket_id", sel.value);
+
+  document.getElementById("bucketMeta").innerHTML = `<span class="pill">buckets=${buckets.length}</span>`;
+  await loadCrates();
+}
+
+async function onBucketChange(){
+  const sel = document.getElementById("bucketSelect");
+  localStorage.setItem("selected_bucket_id", sel.value);
+  await loadCrates();
+}
+
+/* ---------------- 关键修复：ratio grid 不重绘输入，只更新目标列 ---------------- */
+let crateList = [];
+let crateCountMap = {};
+let weightInputId = {}; // crate -> input id
+let targetId = {};      // crate -> target code id
+
+function computeTargetCounts(weights){
+  // weights: crate -> number
+  const crates = crateList.slice();
+  let sum = 0;
+  crates.forEach(c => { sum += Math.max(0, Number(weights[c] || 0)); });
+  if(sum <= 0){
+    crates.forEach(c => { weights[c] = 1; });
+    sum = crates.length || 1;
+  }
+  const raw = {};
+  const base = {};
+  crates.forEach(c => {
+    raw[c] = 10 * Math.max(0, Number(weights[c] || 0)) / sum;
+    base[c] = Math.floor(raw[c]);
+  });
+  let rem = 10 - crates.reduce((acc,c)=>acc+base[c],0);
+
+  const order = crates
+    .map(c => ({c, frac: raw[c] - base[c]}))
+    .sort((a,b)=>b.frac - a.frac)
+    .map(x=>x.c);
+
+  for(let i=0;i<rem;i++){
+    base[order[i % order.length]] += 1;
+  }
+  return base;
+}
+
+function readWeights(){
+  const w = {};
+  crateList.forEach(c=>{
+    const id = weightInputId[c];
+    const el = document.getElementById(id);
+    const v = el ? parseFloat(el.value) : 0;
+    w[c] = Number.isNaN(v) ? 0 : v;
+  });
+  return w;
+}
+
+function renderTargets(){
+  const weights = readWeights();
+  const targets = computeTargetCounts({...weights});
+  crateList.forEach(c=>{
+    const el = document.getElementById(targetId[c]);
+    if(el) el.textContent = String(targets[c] ?? 0);
+  });
+  document.getElementById("ratioTip").textContent =
+    `箱子数=${crateList.length}（目标已归一化为 10 件整数配比）`;
+}
+
+async function loadCrates(){
+  const bucket_id = parseInt(document.getElementById("bucketSelect").value);
+  if(Number.isNaN(bucket_id)) return;
+
+  const data = await apiGet(`/bucket_crates?bucket_id=${bucket_id}`);
+  const crates = (data && data.crates) ? data.crates : [];
+
+  crateList = crates.map(x => x.crate);
+  crateCountMap = {};
+  crateList.forEach((c, idx) => { crateCountMap[c] = crates[idx].count; });
+
+  weightInputId = {};
+  targetId = {};
+  crateList.forEach((c, i) => {
+    weightInputId[c] = `w_${i}`;
+    targetId[c] = `t_${i}`;
+  });
+
+  const grid = document.getElementById("ratioGrid");
+  grid.innerHTML = `
+    <div class="hdr">变量</div>
+    <div class="hdr">箱子</div>
+    <div class="hdr">桶内数量</div>
+    <div class="hdr">权重</div>
+    <div class="hdr">目标(10件)</div>
+  `;
+
+  crateList.forEach((c, i) => {
+    grid.insertAdjacentHTML("beforeend", `
+      <div class="muted">x${i+1}</div>
+      <div>${crateLabel(c)}</div>
+      <div>${crateCountMap[c] ?? 0}</div>
+      <div><input id="${weightInputId[c]}" value="1" oninput="renderTargets()"></div>
+      <div><code id="${targetId[c]}">?</code></div>
+    `);
+  });
+
+  renderTargets();
+}
+
+function applyRatioText(){
+  const t = document.getElementById("ratioText").value.trim();
+  if(!t) return;
+  const parts = t.split(":").map(x => x.trim()).filter(x => x.length>0);
+  if(parts.length !== crateList.length){
+    alert(`你输入了 ${parts.length} 项，但桶里有 ${crateList.length} 个箱子（需要一一对应）`);
+    return;
+  }
+  parts.forEach((p, i) => {
+    const v = parseFloat(p);
+    const c = crateList[i];
+    const id = weightInputId[c];
+    const el = document.getElementById(id);
+    if(el) el.value = Number.isNaN(v) ? "0" : String(v);
+  });
+  renderTargets();
+}
+
+/* ---------------- 搜索请求 ---------------- */
+async function run(){
+  const out = document.getElementById("out");
+  const msg = document.getElementById("msg");
+  out.innerHTML = "";
+  msg.textContent = "请求中...";
+
+  try{
+    const bucket_id = parseInt(document.getElementById("bucketSelect").value);
+    if(Number.isNaN(bucket_id)) throw new Error("请选择一个数据桶");
+
+    const products = [];
+    for(let i=0;i<rows;i++){
+      const el1 = document.getElementById(`out_min_${i}`);
+      const el2 = document.getElementById(`out_max_${i}`);
+      const el3 = document.getElementById(`target_low_${i}`);
+      const el4 = document.getElementById(`target_high_${i}`);
+      if(!el1 || !el2 || !el3 || !el4) throw new Error("槽位输入框未渲染，请刷新页面");
+
+      const out_min = parseFloat(el1.value);
+      const out_max = parseFloat(el2.value);
+      const target_low = parseFloat(el3.value);
+      const target_high = parseFloat(el4.value);
+
+      if([out_min,out_max,target_low,target_high].some(x=>Number.isNaN(x))){
+        throw new Error(`槽位 #${i+1} 有非数字输入`);
+      }
+      products.push({out_min,out_max,target_low,target_high});
+    }
+
+    const crate_weights = readWeights();
+
+    const res = await fetch("/search_ratio", {
+      method:"POST",
+      headers:{...authHeaders(), "Content-Type":"application/json"},
+      body: JSON.stringify({bucket_id, products, crate_weights})
+    });
+
+    const text = await res.text();
+    if(!res.ok){
+      msg.innerHTML = `<div class="err">HTTP ${res.status}\n${text}</div>`;
+      return;
+    }
+
+    const data = JSON.parse(text);
+    const plans = Array.isArray(data.plans) ? data.plans : [];
+    msg.innerHTML = `<span class="ok">完成：</span>输入槽位 ${data.input_slots}，返回方案 ${plans.length}`;
+
+    const joint = data.joint_mean_x_range;
+    const targetCounts = data.crate_target_counts || {};
+    const crateOrder = data.crate_order || crateList;
+
+    const head = document.createElement("div");
+    head.className = "slot";
+    head.innerHTML = `
+      <h3>联合限制（所有槽位 AND）</h3>
+      <p class="sub">mean(x) 交集：${fmt(joint.L,6)} ~ ${fmt(joint.U,6)}（左闭右开）｜槽位数：${data.input_slots}</p>
+
+      <div class="plan">
+        <div class="planTitle">
+          <div><b>箱子目标配比（10 件）</b></div>
+          <div class="muted">由权重归一化得到</div>
+        </div>
+        <table>
+          <thead><tr><th>变量</th><th>箱子</th><th>目标(10)</th></tr></thead>
+          <tbody>
+            ${crateOrder.map((c, i)=>`
+              <tr>
+                <td>x${i+1}</td>
+                <td>${crateLabel(c)}</td>
+                <td>${targetCounts[c] ?? 0}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+    out.appendChild(head);
+
+    if(plans.length === 0){
+      const empty = document.createElement("div");
+      empty.className = "slot";
+      empty.innerHTML = `<div class="muted">没有找到可行方案。</div>`;
+      out.appendChild(empty);
+      return;
+    }
+
+    plans.forEach((plan, idx) => {
+      const div = document.createElement("div");
+      div.className = "slot";
+      const actual = plan.crates || {};
+      const dist = plan.crate_distance ?? "-";
+
+      div.innerHTML = `
+        <h3>方案 ${idx+1}
+          <span class="pill">rarity=${plan.rarity}</span>
+          <span class="pill">crate_dist=${dist}</span>
+        </h3>
+        <p class="sub">mean(x)=${fmt(plan.mean_x,6)} ｜实际箱子分布：<code>${cratesText(actual)}</code></p>
+
+        <div class="plan">
+          <div class="planTitle">
+            <div><b>箱子：目标 vs 实际（10 件）</b></div>
+            <div class="muted">dist 越小越接近</div>
+          </div>
+          <table>
+            <thead><tr><th>变量</th><th>箱子</th><th>目标</th><th>实际</th></tr></thead>
+            <tbody>
+              ${crateOrder.map((c, i)=>`
+                <tr>
+                  <td>x${i+1}</td>
+                  <td>${crateLabel(c)}</td>
+                  <td>${targetCounts[c] ?? 0}</td>
+                  <td>${actual[c] ?? 0}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="plan">
+          <div class="planTitle">
+            <div><b>配料（10 件）</b></div>
+            <div class="muted">每件标明磨损与上下限</div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>#</th><th>材料</th><th>箱子</th><th>稀有度</th>
+                <th>in_min</th><th>in_max</th><th>磨损(float)</th><th>x</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${plan.materials.map((m, j)=>`
+                <tr>
+                  <td>${j+1}</td>
+                  <td>${m.name}</td>
+                  <td>${crateLabel(m.crate)}</td>
+                  <td>${m.rarity}</td>
+                  <td>${fmt(m.in_min,6)}</td>
+                  <td>${fmt(m.in_max,6)}</td>
+                  <td>${fmt(m.in_float,6)}</td>
+                  <td>${fmt(m.x,6)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+      out.appendChild(div);
+    });
+
+  }catch(e){
+    msg.innerHTML = `<div class="err">${e?.message ?? e}</div>`;
+  }
+}
+
+ensureLogin();
+renderSlots();
+loadBuckets();
+</script>
+</body>
+</html>
