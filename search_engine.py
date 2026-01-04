@@ -677,7 +677,8 @@ def search_plans_for_rarity(
 
     mats_sorted = sorted(mats_all, key=lambda m: m.x)
 
-    if len(mats_sorted) <= 60 and estimate_combo_count(len(mats_sorted)) <= max_combo_count:
+    small_combo_limit = min(max_combo_count, 1_000_000)
+    if len(mats_sorted) <= 50 and estimate_combo_count(len(mats_sorted)) <= small_combo_limit:
         pre_small = build_precomp_for_candidates(rarity, mats_sorted)
         if pre_small is not None:
             return _pack_plans_multistart(
@@ -858,8 +859,15 @@ def pick_candidates_ratio(
     - Include edges for sum adjustment
     """
     if len(remaining) <= cap:
-        out = sorted(remaining, key=lambda m: m.x)
-        return out
+        return sorted(remaining, key=lambda m: m.x)
+
+    target_crates = [c for c in crate_order if target_counts.get(c, 0) > 0]
+    if len(target_crates) == 1:
+        only_crate = target_crates[0]
+        only_items = [m for m in remaining if m.crate == only_crate]
+        if len(only_items) >= 10:
+            only_items.sort(key=lambda m: m.x)
+            return only_items[:cap]
 
     near = sorted(remaining, key=lambda m: abs(m.x - target_mean_x))
     by_x = sorted(remaining, key=lambda m: m.x)
@@ -867,14 +875,15 @@ def pick_candidates_ratio(
     seen: Set[int] = set()
     cand: List[Material] = []
 
-    # Seed from crates with highest target first
+    # Seed from crates with highest target first (only target crates)
     for crate in sorted(crate_order, key=lambda c: target_counts.get(c, 0), reverse=True):
         need = target_counts.get(crate, 0)
         if need <= 0:
             continue
         ms = [m for m in remaining if m.crate == crate]
         ms.sort(key=lambda m: abs(m.x - target_mean_x))
-        quota = max(2, min(len(ms), need * 3))
+        quota = max(need * 3, need + 2)
+        quota = min(len(ms), quota)
         for m in ms[:quota]:
             if len(cand) >= cap:
                 break
@@ -884,7 +893,7 @@ def pick_candidates_ratio(
         if len(cand) >= cap:
             break
 
-    # Fill near-target, prefer crates with target>0 first
+    # Fill near-target with target crates first
     for pass_no in (0, 1):
         for m in near:
             if len(cand) >= cap:
@@ -1208,177 +1217,6 @@ def _pack_plans_multistart_ratio(
 
     return best_pack
 
-def _get_seed_plans_ratio(
-    pre: Precomp,
-    sum_lo: float,
-    sum_hi: float,
-    desired_total: float,
-    target_counts_arr: List[int],
-    *,
-    seed_k: int = 12,
-    left_limit: int = 12000,
-    probe_limit: int = 120,
-    right_open: bool = True,
-) -> List[tuple]:
-    """
-    找一批“第一组候选方案”（严格按箱子比例），用于 multi-start。
-    返回 [(sum_score,total,chosen,plan_mask), ...]，按 sum_score 排序。
-    """
-    combos = pre.combos5
-    sums = pre.combo_sums
-    cpacks = pre.combo_cpacks
-    if cpacks is None:
-        raise ValueError("pre.combo_cpacks is required for ratio seed search")
-
-    nC = len(combos)
-    left_limit = min(left_limit, nC)
-    target_left = desired_total / 2.0
-
-    seeds = []
-    seen = set()
-
-    shifts = [3 * i for i in range(len(target_counts_arr))]
-
-    for li in iter_indices_near_target(sums, target_left, left_limit):
-        sL, maskL, idxL = combos[li]
-        need_lo = sum_lo - sL
-        need_hi = sum_hi - sL
-        if need_hi < sums[0] - 1e-12 or need_lo > sums[-1] + 1e-12:
-            continue
-
-        j0 = bisect_left(sums, need_lo - 1e-12)
-        j1 = bisect_left(sums, need_hi + 1e-12)
-        if j0 >= j1:
-            continue
-
-        targetR = desired_total - sL
-        take = min(probe_limit, j1 - j0)
-        for j in _iter_window_near_target(sums, targetR, j0, j1, take):
-            sR2, maskR, idxR = combos[j]
-            if maskL & maskR:
-                continue
-
-            total = sL + sR2
-            if total < sum_lo - 1e-12:
-                continue
-            if right_open:
-                if total >= sum_hi - 1e-12:
-                    continue
-            else:
-                if total > sum_hi + 1e-9:
-                    continue
-
-            cL = cpacks[li]
-            cR = cpacks[j]
-            dist = 0
-            for sh, tgt in zip(shifts, target_counts_arr):
-                cnt = ((cL >> sh) & 7) + ((cR >> sh) & 7)
-                dist += abs(cnt - tgt)
-            if dist != 0:
-                continue
-
-            plan_mask = maskL | maskR
-            if plan_mask in seen:
-                continue
-            seen.add(plan_mask)
-
-            chosen_idxs = tuple(sorted(idxL + idxR))
-            chosen = [pre.mats[i] for i in chosen_idxs]
-            chosen = sorted(chosen, key=lambda m: m.id)
-
-            sum_score = abs(total - desired_total)
-            seeds.append((sum_score, total, chosen, plan_mask))
-
-            if len(seeds) >= seed_k:
-                seeds.sort(key=lambda t: t[0])
-                return seeds
-
-    seeds.sort(key=lambda t: t[0])
-    return seeds
-
-
-def _pack_plans_multistart_ratio(
-    pre: Precomp,
-    slot_ranges: List[dict],
-    L_all: float,
-    U_all: float,
-    target_counts_arr: List[int],
-    *,
-    seed_k: int = 12,
-    right_open: bool = True,
-) -> List[dict]:
-    """
-    目标：尽可能多地返回“严格比例”方案。
-    """
-    sum_lo = 10.0 * L_all
-    sum_hi = 10.0 * U_all
-    desired_total = (sum_lo + sum_hi) / 2.0
-
-    seeds = _get_seed_plans_ratio(
-        pre,
-        sum_lo,
-        sum_hi,
-        desired_total,
-        target_counts_arr,
-        seed_k=seed_k,
-        left_limit=len(pre.combo_sums),
-        probe_limit=120,
-        right_open=right_open,
-    )
-
-    if not seeds:
-        return []
-
-    best_pack = []
-    best_used = -1
-
-    seed_options = [None] + seeds
-
-    for seed in seed_options:
-        used_mask = 0
-        pack = []
-
-        if seed is not None:
-            sum_score, total_sum, chosen, plan_mask = seed
-            used_mask |= plan_mask
-            mean_x = total_sum / 10.0
-            plan = make_plan_dict(pre.rarity, mean_x, chosen, slot_ranges, right_open=right_open)
-            if plan is not None:
-                plan["crate_distance"] = 0
-                pack.append(plan)
-
-        while True:
-            best = query_best_plan_ratio(
-                pre,
-                sum_lo,
-                sum_hi,
-                used_mask,
-                desired_total,
-                target_counts_arr=target_counts_arr,
-                left_limit=12000,
-                probe_limit=80,
-                exact_ratio_only=True,
-                right_open=right_open,
-            )
-            if best is None:
-                break
-            dist, sum_score, total_sum, chosen, plan_mask = best
-            used_mask |= plan_mask
-
-            mean_x = total_sum / 10.0
-            plan = make_plan_dict(pre.rarity, mean_x, chosen, slot_ranges, right_open=right_open)
-            if plan is None:
-                continue
-            plan["crate_distance"] = int(dist)
-            pack.append(plan)
-
-        used_cnt = 10 * len(pack)
-        if (len(pack) > len(best_pack)) or (len(pack) == len(best_pack) and used_cnt > best_used):
-            best_pack = pack
-            best_used = used_cnt
-
-    return best_pack
-
 def search_plans_for_rarity_ratio(
     rarity: int,
     mats_all: List[Material],
@@ -1404,7 +1242,8 @@ def search_plans_for_rarity_ratio(
 
     mats_sorted = sorted(mats_all, key=lambda m: m.x)
 
-    if len(mats_sorted) <= 60 and estimate_combo_count(len(mats_sorted)) <= max_combo_count:
+    small_combo_limit = min(max_combo_count, 1_000_000)
+    if len(mats_sorted) <= 50 and estimate_combo_count(len(mats_sorted)) <= small_combo_limit:
         pre_small = build_precomp_for_candidates_ratio(rarity, mats_sorted, crate_to_idx=crate_to_idx)
         if pre_small is not None:
             plans = _pack_plans_multistart_ratio(
