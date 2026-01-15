@@ -245,66 +245,106 @@ async function run(){
       empty.className = "slot";
       empty.innerHTML = `<div class="muted">没有找到可行方案。</div>`;
       out.appendChild(empty);
-      return;
+    } else {
+      data.plans.forEach((plan, idx) => {
+        const div = document.createElement("div");
+        div.className = "slot";
+        div.innerHTML = `
+          <h3>方案 ${idx+1} <span class="pill">rarity=${plan.rarity}</span></h3>
+          <p class="sub">mean(x)=${fmt(plan.mean_x,6)} ｜箱子分布：<code>${cratesText(plan.crates)}</code></p>
+
+          <div class="plan">
+            <div class="planTitle">
+              <div><b>各槽位产物磨损回代</b></div>
+              <div class="muted">✓=命中（闭区间）</div>
+            </div>
+            <table>
+              <thead><tr><th>槽位</th><th>out_float</th><th>命中</th></tr></thead>
+              <tbody>
+                ${plan.slot_outputs.map(o => `
+                  <tr>
+                    <td>#${o.slot_index+1}</td>
+                    <td>${fmt(o.out_float,6)}</td>
+                    <td>${o.hit ? "✓" : "✗"}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="plan">
+            <div class="planTitle">
+              <div><b>配料（10 件，同稀有度）</b></div>
+              <div class="muted">每件标明磨损与上下限</div>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th><th>材料</th><th>箱子</th><th>稀有度</th>
+                  <th>in_min</th><th>in_max</th><th>磨损(float)</th><th>x</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${plan.materials.map((m, j)=>`
+                  <tr>
+                    <td>${j+1}</td>
+                    <td>${m.name}</td>
+                    <td>${m.crate || ""}</td>
+                    <td>${m.rarity}</td>
+                    <td>${fmt(m.in_min,6)}</td>
+                    <td>${fmt(m.in_max,6)}</td>
+                    <td>${fmt(m.in_float,6)}</td>
+                    <td>${fmt(m.x,6)}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        `;
+        out.appendChild(div);
+      });
     }
 
-    data.plans.forEach((plan, idx) => {
+    if(Array.isArray(data.unused_materials)){
       const div = document.createElement("div");
       div.className = "slot";
-      div.innerHTML = `
-        <h3>方案 ${idx+1} <span class="pill">rarity=${plan.rarity}</span></h3>
-        <p class="sub">mean(x)=${fmt(plan.mean_x,6)} ｜箱子分布：<code>${cratesText(plan.crates)}</code></p>
-
-        <div class="plan">
-          <div class="planTitle">
-            <div><b>各槽位产物磨损回代</b></div>
-            <div class="muted">✓=命中（闭区间）</div>
-          </div>
-          <table>
-            <thead><tr><th>槽位</th><th>out_float</th><th>命中</th></tr></thead>
-            <tbody>
-              ${plan.slot_outputs.map(o => `
+      if(data.unused_materials.length === 0){
+        div.innerHTML = `<div class="muted">未使用的材料：无</div>`;
+      } else {
+        div.innerHTML = `
+          <h3>未使用的材料（${data.unused_materials.length} 件）</h3>
+          <div class="plan">
+            <div class="planTitle">
+              <div><b>未使用材料列表</b></div>
+              <div class="muted">按桶内原始材料返回</div>
+            </div>
+            <table>
+              <thead>
                 <tr>
-                  <td>#${o.slot_index+1}</td>
-                  <td>${fmt(o.out_float,6)}</td>
-                  <td>${o.hit ? "✓" : "✗"}</td>
+                  <th>#</th><th>材料</th><th>箱子</th><th>稀有度</th>
+                  <th>in_min</th><th>in_max</th><th>磨损(float)</th><th>x</th>
                 </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        </div>
-
-        <div class="plan">
-          <div class="planTitle">
-            <div><b>配料（10 件，同稀有度）</b></div>
-            <div class="muted">每件标明磨损与上下限</div>
+              </thead>
+              <tbody>
+                ${data.unused_materials.map((m, j)=>`
+                  <tr>
+                    <td>${j+1}</td>
+                    <td>${m.name}</td>
+                    <td>${m.crate || ""}</td>
+                    <td>${m.rarity}</td>
+                    <td>${fmt(m.in_min,6)}</td>
+                    <td>${fmt(m.in_max,6)}</td>
+                    <td>${fmt(m.in_float,6)}</td>
+                    <td>${fmt(m.x,6)}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th>#</th><th>材料</th><th>箱子</th><th>稀有度</th>
-                <th>in_min</th><th>in_max</th><th>磨损(float)</th><th>x</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${plan.materials.map((m, j)=>`
-                <tr>
-                  <td>${j+1}</td>
-                  <td>${m.name}</td>
-                  <td>${m.crate || ""}</td>
-                  <td>${m.rarity}</td>
-                  <td>${fmt(m.in_min,6)}</td>
-                  <td>${fmt(m.in_max,6)}</td>
-                  <td>${fmt(m.in_float,6)}</td>
-                  <td>${fmt(m.x,6)}</td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        </div>
-      `;
+        `;
+      }
       out.appendChild(div);
-    });
+    }
 
   }catch(e){
     msg.innerHTML = `<div class="err">${e?.message ?? e}</div>`;
