@@ -375,7 +375,7 @@ def index():
 let rows = 1;
 
 function rowTemplate(i, preset){
-  const v = preset || {out_min:"0.00", out_max:"1.00", target_low:"0.20", target_high:"0.40"};
+  const v = preset || {out_min:"0.00", out_max:"1.00", target_low:"0.0699", target_high:"0.070"};
   return `
     <div class="row">
       <div class="rownum">#${i+1}</div>
@@ -399,10 +399,10 @@ function render(){
   for(let i=0;i<rows;i++){
     // 给前两行一点不同默认值，方便你立刻看到多槽位效果
     const preset = (i===0)
-      ? {out_min:"0.00", out_max:"1.00", target_low:"0.20", target_high:"0.40"}
+      ? {out_min:"0.00", out_max:"1.00", target_low:"0.0699", target_high:"0.070"}
       : (i===1)
         ? {out_min:"0.00", out_max:"0.45", target_low:"0.10", target_high:"0.18"}
-        : {out_min:"0.00", out_max:"1.00", target_low:"0.20", target_high:"0.40"};
+        : {out_min:"0.00", out_max:"1.00", target_low:"0.0699", target_high:"0.070"};
     grid.insertAdjacentHTML("beforeend", rowTemplate(i, preset));
   }
 }
