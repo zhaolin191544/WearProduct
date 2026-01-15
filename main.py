@@ -5,7 +5,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 
 from db import SessionLocal, init_db
 from models import Bucket, User, Item
@@ -321,6 +321,24 @@ def _db_items_to_materials(items: List[Item]) -> List[Material]:
     return materials
 
 
+def _material_to_dict(m: Material) -> Dict[str, Any]:
+    return {
+        "id": m.id,
+        "name": m.name,
+        "crate": m.crate,
+        "rarity": m.rarity,
+        "in_min": m.in_min,
+        "in_max": m.in_max,
+        "in_float": m.in_float,
+        "x": m.x,
+    }
+
+
+def _unused_materials(plans: List[dict], materials: List[Material]) -> List[dict]:
+    used_ids = {m["id"] for plan in plans for m in plan.get("materials", [])}
+    return [_material_to_dict(m) for m in materials if m.id not in used_ids]
+
+
 @app.post("/search")
 def search(req: MultiSearchRequest, user: User = Depends(get_current_user)):
     bucket_id = req.bucket_id
@@ -329,6 +347,8 @@ def search(req: MultiSearchRequest, user: User = Depends(get_current_user)):
     db = SessionLocal()
     items = db.query(Item).filter(Item.bucket_id == bucket_id).all()
     db.close()
+
+    materials = _db_items_to_materials(items)
 
     slot_ranges = []
     for idx, s in enumerate(slots):
@@ -355,10 +375,9 @@ def search(req: MultiSearchRequest, user: User = Depends(get_current_user)):
             "joint_mean_x_range": {"L": L_all, "U": U_all},
             "slot_ranges": slot_ranges,
             "plans": [],
+            "unused_materials": [_material_to_dict(m) for m in materials],
             "notes": ["无解：mean(x) 交集为空（左闭右开）。"]
         }
-
-    materials = _db_items_to_materials(items)
 
     has_crates = any(m.crate for m in materials)
     if has_crates:
@@ -399,6 +418,7 @@ def search(req: MultiSearchRequest, user: User = Depends(get_current_user)):
         "joint_mean_x_range": {"L": L_all, "U": U_all},
         "slot_ranges": slot_ranges,
         "plans": plans,
+        "unused_materials": _unused_materials(plans, materials),
         "notes": notes,
     }
 
@@ -444,6 +464,8 @@ def search_ratio(req: RatioSearchRequest, user: User = Depends(get_current_user)
     items = db.query(Item).filter(Item.bucket_id == bucket_id).all()
     db.close()
 
+    materials = _db_items_to_materials(items)
+
     slot_ranges = []
     for idx, s in enumerate(slots):
         tlo = min(s.target_low, s.target_high)
@@ -470,6 +492,7 @@ def search_ratio(req: RatioSearchRequest, user: User = Depends(get_current_user)
             "crate_order": [],
             "crate_target_counts": {},
             "plans": [],
+            "unused_materials": [_material_to_dict(m) for m in materials],
             "notes": ["无解：mean(x) 交集为空（左闭右开）。"]
         }
 
@@ -479,8 +502,6 @@ def search_ratio(req: RatioSearchRequest, user: User = Depends(get_current_user)
         c = it.crate or ""
         counts[c] = counts.get(c, 0) + 1
     crate_order = [k for k, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
-
-    materials = _db_items_to_materials(items)
 
     plans, target_counts, crate_order2 = search_bucket_all_plans_with_crate_ratio(
         materials,
@@ -501,6 +522,7 @@ def search_ratio(req: RatioSearchRequest, user: User = Depends(get_current_user)
         "crate_order": crate_order2,
         "crate_target_counts": target_counts,
         "plans": plans,
+        "unused_materials": _unused_materials(plans, materials),
         "notes": [
             "概率搜索：只返回箱子数量比例严格符合你填写权重的方案。",
             "评分：在比例严格匹配前提下，最小化 sum(x) 偏离中心。",
