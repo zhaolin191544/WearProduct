@@ -131,11 +131,7 @@ def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 def out_to_mean_x_range(out_min: float, out_max: float, target_low: float, target_high: float, eps: float = 1e-12) -> Tuple[float, float]:
-    if out_max - out_min < eps:
-        return (1.0, 0.0)  # 无解
-    L = (target_low - out_min) / (out_max - out_min)
-    U = (target_high - out_min) / (out_max - out_min)
-    L, U = min(L, U), max(L, U)
+    L, U = min(target_low, target_high), max(target_low, target_high)
     return (clamp(L, 0.0, 1.0), clamp(U, 0.0, 1.0))
 
 def calc_out_float(out_min: float, out_max: float, mean_x: float) -> float:
