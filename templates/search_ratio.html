@@ -378,7 +378,7 @@ async function run(){
     head.className = "slot";
     head.innerHTML = `
       <h3>联合限制（所有槽位 AND）</h3>
-      <p class="sub">mean(x) 交集：${fmt(joint.L,6)} ~ ${fmt(joint.U,6)}（左闭右开）｜槽位数：${data.input_slots}</p>
+      <p class="sub">交集区间：${fmt(joint.L,6)} ~ ${fmt(joint.U,6)}（左闭右开）｜槽位数：${data.input_slots}</p>
 
       <div class="plan">
         <div class="planTitle">
@@ -418,7 +418,7 @@ async function run(){
             <span class="pill">rarity=${plan.rarity}</span>
             <span class="pill">crate_dist=${dist}</span>
           </h3>
-          <p class="sub">mean(x)=${fmt(plan.mean_x,6)} ｜实际箱子分布：<code>${cratesText(actual)}</code></p>
+          <p class="sub">实际箱子分布：<code>${cratesText(actual)}</code></p>
 
           <div class="plan">
             <div class="planTitle">
@@ -434,6 +434,25 @@ async function run(){
                     <td>${crateLabel(c)}</td>
                     <td>${targetCounts[c] ?? 0}</td>
                     <td>${actual[c] ?? 0}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="plan">
+            <div class="planTitle">
+              <div><b>各槽位产物磨损回代</b></div>
+              <div class="muted">✓=命中（左闭右开）</div>
+            </div>
+            <table>
+              <thead><tr><th>槽位</th><th>out_float</th><th>命中</th></tr></thead>
+              <tbody>
+                ${(plan.slot_outputs || []).map(o => `
+                  <tr>
+                    <td>#${o.slot_index+1}</td>
+                    <td>${fmt(o.out_float,6)}</td>
+                    <td>${o.hit ? "✓" : "✗"}</td>
                   </tr>
                 `).join("")}
               </tbody>

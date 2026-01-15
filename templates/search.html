@@ -216,7 +216,7 @@ async function run(){
     head.className = "slot";
     head.innerHTML = `
       <h3>联合限制（所有槽位 AND）</h3>
-      <p class="sub">交集 mean(x) 区间：${fmt(joint.L,6)} ~ ${fmt(joint.U,6)}（闭区间）｜槽位数：${data.input_slots}</p>
+      <p class="sub">交集区间：${fmt(joint.L,6)} ~ ${fmt(joint.U,6)}（闭区间）｜槽位数：${data.input_slots}</p>
       <table>
         <thead>
           <tr>
@@ -251,7 +251,7 @@ async function run(){
         div.className = "slot";
         div.innerHTML = `
           <h3>方案 ${idx+1} <span class="pill">rarity=${plan.rarity}</span></h3>
-          <p class="sub">mean(x)=${fmt(plan.mean_x,6)} ｜箱子分布：<code>${cratesText(plan.crates)}</code></p>
+          <p class="sub">箱子分布：<code>${cratesText(plan.crates)}</code></p>
 
           <div class="plan">
             <div class="planTitle">
