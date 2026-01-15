@@ -146,7 +146,7 @@ function cratesText(crates){
 let rows = 1;
 
 function rowTemplate(i){
-  const v = {out_min:"0.00", out_max:"1.00", target_low:"0.0699", target_high:"0.070"};
+  const v = {out_min:"0.00", out_max:"1.00", target_low:"0.20", target_high:"0.40"};
   return `
     <div class="row">
       <div class="rownum">#${i+1}</div>
@@ -406,73 +406,113 @@ async function run(){
       empty.className = "slot";
       empty.innerHTML = `<div class="muted">没有找到可行方案。</div>`;
       out.appendChild(empty);
-      return;
+    } else {
+      plans.forEach((plan, idx) => {
+        const div = document.createElement("div");
+        div.className = "slot";
+        const actual = plan.crates || {};
+        const dist = plan.crate_distance ?? "-";
+
+        div.innerHTML = `
+          <h3>方案 ${idx+1}
+            <span class="pill">rarity=${plan.rarity}</span>
+            <span class="pill">crate_dist=${dist}</span>
+          </h3>
+          <p class="sub">mean(x)=${fmt(plan.mean_x,6)} ｜实际箱子分布：<code>${cratesText(actual)}</code></p>
+
+          <div class="plan">
+            <div class="planTitle">
+              <div><b>箱子：目标 vs 实际（10 件）</b></div>
+              <div class="muted">dist 越小越接近</div>
+            </div>
+            <table>
+              <thead><tr><th>变量</th><th>箱子</th><th>目标</th><th>实际</th></tr></thead>
+              <tbody>
+                ${crateOrder.map((c, i)=>`
+                  <tr>
+                    <td>x${i+1}</td>
+                    <td>${crateLabel(c)}</td>
+                    <td>${targetCounts[c] ?? 0}</td>
+                    <td>${actual[c] ?? 0}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="plan">
+            <div class="planTitle">
+              <div><b>配料（10 件）</b></div>
+              <div class="muted">每件标明磨损与上下限</div>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th><th>材料</th><th>箱子</th><th>稀有度</th>
+                  <th>in_min</th><th>in_max</th><th>磨损(float)</th><th>x</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${plan.materials.map((m, j)=>`
+                  <tr>
+                    <td>${j+1}</td>
+                    <td>${m.name}</td>
+                    <td>${crateLabel(m.crate)}</td>
+                    <td>${m.rarity}</td>
+                    <td>${fmt(m.in_min,6)}</td>
+                    <td>${fmt(m.in_max,6)}</td>
+                    <td>${fmt(m.in_float,6)}</td>
+                    <td>${fmt(m.x,6)}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        `;
+        out.appendChild(div);
+      });
     }
 
-    plans.forEach((plan, idx) => {
+    if(Array.isArray(data.unused_materials)){
       const div = document.createElement("div");
       div.className = "slot";
-      const actual = plan.crates || {};
-      const dist = plan.crate_distance ?? "-";
-
-      div.innerHTML = `
-        <h3>方案 ${idx+1}
-          <span class="pill">rarity=${plan.rarity}</span>
-          <span class="pill">crate_dist=${dist}</span>
-        </h3>
-        <p class="sub">mean(x)=${fmt(plan.mean_x,6)} ｜实际箱子分布：<code>${cratesText(actual)}</code></p>
-
-        <div class="plan">
-          <div class="planTitle">
-            <div><b>箱子：目标 vs 实际（10 件）</b></div>
-            <div class="muted">dist 越小越接近</div>
-          </div>
-          <table>
-            <thead><tr><th>变量</th><th>箱子</th><th>目标</th><th>实际</th></tr></thead>
-            <tbody>
-              ${crateOrder.map((c, i)=>`
+      if(data.unused_materials.length === 0){
+        div.innerHTML = `<div class="muted">未使用的材料：无</div>`;
+      } else {
+        div.innerHTML = `
+          <h3>未使用的材料（${data.unused_materials.length} 件）</h3>
+          <div class="plan">
+            <div class="planTitle">
+              <div><b>未使用材料列表</b></div>
+              <div class="muted">按桶内原始材料返回</div>
+            </div>
+            <table>
+              <thead>
                 <tr>
-                  <td>x${i+1}</td>
-                  <td>${crateLabel(c)}</td>
-                  <td>${targetCounts[c] ?? 0}</td>
-                  <td>${actual[c] ?? 0}</td>
+                  <th>#</th><th>材料</th><th>箱子</th><th>稀有度</th>
+                  <th>in_min</th><th>in_max</th><th>磨损(float)</th><th>x</th>
                 </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        </div>
-
-        <div class="plan">
-          <div class="planTitle">
-            <div><b>配料（10 件）</b></div>
-            <div class="muted">每件标明磨损与上下限</div>
+              </thead>
+              <tbody>
+                ${data.unused_materials.map((m, j)=>`
+                  <tr>
+                    <td>${j+1}</td>
+                    <td>${m.name}</td>
+                    <td>${crateLabel(m.crate)}</td>
+                    <td>${m.rarity}</td>
+                    <td>${fmt(m.in_min,6)}</td>
+                    <td>${fmt(m.in_max,6)}</td>
+                    <td>${fmt(m.in_float,6)}</td>
+                    <td>${fmt(m.x,6)}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th>#</th><th>材料</th><th>箱子</th><th>稀有度</th>
-                <th>in_min</th><th>in_max</th><th>磨损(float)</th><th>x</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${plan.materials.map((m, j)=>`
-                <tr>
-                  <td>${j+1}</td>
-                  <td>${m.name}</td>
-                  <td>${crateLabel(m.crate)}</td>
-                  <td>${m.rarity}</td>
-                  <td>${fmt(m.in_min,6)}</td>
-                  <td>${fmt(m.in_max,6)}</td>
-                  <td>${fmt(m.in_float,6)}</td>
-                  <td>${fmt(m.x,6)}</td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        </div>
-      `;
+        `;
+      }
       out.appendChild(div);
-    });
+    }
 
   }catch(e){
     msg.innerHTML = `<div class="err">${e?.message ?? e}</div>`;
