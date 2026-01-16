@@ -660,7 +660,7 @@ def search_plans_for_rarity(
     *,
     cap: int = 40,
     max_combo_count: int = 2_000_000,
-    max_rounds: int = 8,
+    max_rounds: int = 16,
     right_open: bool = True,
 ) -> List[dict]:
     """
@@ -707,7 +707,7 @@ def search_plans_for_rarity(
             break
 
         # decide candidates: if remaining small enough, use all; else targeted cap
-        if estimate_combo_count(len(remaining)) <= max_combo_count:
+        if len(remaining) <= cap:
             cand = remaining
         else:
             cand = pick_candidates_targeted(remaining, target_mean_x=target_mean, cap=cap, edge_k=6)
@@ -815,7 +815,7 @@ def search_bucket_all_plans(
             U_all,
             cap=cap,
             max_combo_count=max_combo_count,
-            max_rounds=8,
+            max_rounds=16,
             right_open=right_open,
         ))
     return plans
@@ -1057,16 +1057,16 @@ def search_plans_for_rarity_ratio(
         if sum_hi < min_sum - 1e-7 or sum_lo > max_sum + 1e-7:
             break
 
-        if estimate_combo_count(len(remaining)) <= max_combo_count:
+        if len(remaining) <= cap:
             cand = remaining
         else:
             cand = pick_candidates_ratio(
-                remaining,
-                target_mean_x=target_mean,
-                cap=cap,
-                crate_order=crate_order,
-                target_counts=target_counts,
-            )
+            remaining,
+            target_mean_x=target_mean,
+            cap=cap,
+            crate_order=crate_order,
+            target_counts=target_counts,
+        )
 
         pre = build_precomp_for_candidates_ratio(rarity, cand, crate_to_idx=crate_to_idx)
         if pre is None:
@@ -1197,7 +1197,7 @@ def search_bucket_all_plans_with_crate_ratio1(
             crate_weights=crate_weights,
             cap=cap,
             max_combo_count=max_combo_count,
-            max_rounds=8,
+            max_rounds=16,
             right_open=right_open,
         )
         all_plans.extend(plans_r)

@@ -335,6 +335,8 @@ def _material_to_dict(m: Material) -> Dict[str, Any]:
 
 
 def _unused_materials(plans: List[dict], materials: List[Material]) -> List[dict]:
+    if isinstance(plans, tuple) and len(plans) > 0 and isinstance(plans[0], list):
+        plans = plans[0]
     used_ids = {m["id"] for plan in plans for m in plan.get("materials", [])}
     return [_material_to_dict(m) for m in materials if m.id not in used_ids]
 
