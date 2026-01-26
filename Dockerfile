@@ -1,6 +1,6 @@
 # Use an official Python runtime as a parent image
 FROM python:3.10-slim
-
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
