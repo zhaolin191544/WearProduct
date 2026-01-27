@@ -474,7 +474,7 @@ def _ensure_unique_bucket_name(db, base_name: str) -> str:
 @app.post("/unused_to_bucket")
 def unused_to_bucket(req: StoreUnusedRequest, user: User = Depends(get_current_user)):
     if not req.item_ids:
-        raise HTTPException(status_code=400, detail="no items to move")
+        raise HTTPException(status_code=400, detail="no items to store")
 
     db = SessionLocal()
     source_bucket = db.query(Bucket).filter(Bucket.id == req.source_bucket_id).first()
@@ -487,9 +487,6 @@ def unused_to_bucket(req: StoreUnusedRequest, user: User = Depends(get_current_u
         .filter(Item.id.in_(req.item_ids), Item.bucket_id == req.source_bucket_id)
         .all()
     )
-    if not items:
-        db.close()
-        raise HTTPException(status_code=400, detail="no matching items in source bucket")
 
     timestamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     base_name = f"unused_{req.source_bucket_id}_{timestamp}"
@@ -500,13 +497,22 @@ def unused_to_bucket(req: StoreUnusedRequest, user: User = Depends(get_current_u
     db.commit()
     db.refresh(bucket)
 
+    copied = 0
     for it in items:
-        it.bucket_id = bucket.id
+        db.add(Item(
+            bucket_id=bucket.id,
+            name=it.name,
+            rarity=it.rarity,
+            crate=it.crate,
+            in_min=it.in_min,
+            in_max=it.in_max,
+            float_value=it.float_value,
+            x_value=it.x_value,
+        ))
+        copied += 1
     db.commit()
-
-    moved = len(items)
     db.close()
-    return {"bucket_id": bucket.id, "bucket_name": bucket.name, "moved": moved}
+    return {"bucket_id": bucket.id, "bucket_name": bucket.name, "moved": copied}
 
 
 @app.post("/search_ratio")
