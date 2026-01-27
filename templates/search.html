@@ -103,6 +103,8 @@ async function apiGet(url){
 }
 
 let rows = 1;
+let lastUnusedMaterials = [];
+let lastBucketId = null;
 
 function rowTemplate(i, preset){
   const v = preset || {out_min:"0.00", out_max:"1.00", target_low:"0.0699", target_high:"0.070"};
@@ -180,6 +182,8 @@ async function run(){
   const msg = document.getElementById("msg");
   out.innerHTML = "";
   msg.textContent = "请求中...";
+  lastUnusedMaterials = [];
+  lastBucketId = null;
 
   try{
     const bucket_id = parseInt(document.getElementById("bucketSelect").value);
@@ -210,6 +214,8 @@ async function run(){
     }
     const data = JSON.parse(text);
     msg.textContent = `完成：输入槽位 ${data.input_slots}，返回方案 ${data.plans.length}`;
+    lastUnusedMaterials = Array.isArray(data.unused_materials) ? data.unused_materials : [];
+    lastBucketId = bucket_id;
 
     const joint = data.joint_mean_x_range;
     const head = document.createElement("div");
@@ -313,6 +319,10 @@ async function run(){
       } else {
         div.innerHTML = `
           <h3>未使用的材料（${data.unused_materials.length} 件）</h3>
+          <div class="actions">
+            <button onclick="storeUnusedMaterials()">确认存入新桶</button>
+            <span class="muted" id="unusedMsg"></span>
+          </div>
           <div class="plan">
             <div class="planTitle">
               <div><b>未使用材料列表</b></div>
@@ -348,6 +358,48 @@ async function run(){
 
   }catch(e){
     msg.innerHTML = `<div class="err">${e?.message ?? e}</div>`;
+  }
+}
+
+async function storeUnusedMaterials(){
+  const msg = document.getElementById("unusedMsg");
+  if(msg) msg.textContent = "";
+  if(!Array.isArray(lastUnusedMaterials) || lastUnusedMaterials.length === 0){
+    if(msg) msg.textContent = "没有可存入的材料";
+    return;
+  }
+  if(Number.isNaN(Number(lastBucketId))){
+    if(msg) msg.textContent = "未找到来源数据桶";
+    return;
+  }
+  const ok = confirm(`确认将 ${lastUnusedMaterials.length} 件未使用材料存入新桶？`);
+  if(!ok) return;
+  try{
+    const res = await fetch("/unused_to_bucket", {
+      method: "POST",
+      headers: {...authHeaders(), "Content-Type":"application/json"},
+      body: JSON.stringify({
+        source_bucket_id: Number(lastBucketId),
+        item_ids: lastUnusedMaterials.map(m => m.id),
+      })
+    });
+    const text = await res.text();
+    if(!res.ok){
+      if(msg) msg.innerHTML = `<span class="err">HTTP ${res.status}\n${text}</span>`;
+      return;
+    }
+    const data = JSON.parse(text);
+    if(msg){
+      msg.innerHTML = `已存入新桶：#${data.bucket_id} ${data.bucket_name}（${data.moved} 件）`;
+    }
+    await loadBuckets();
+    const sel = document.getElementById("bucketSelect");
+    if(sel && data.bucket_id){
+      sel.value = String(data.bucket_id);
+      localStorage.setItem("selected_bucket_id", sel.value);
+    }
+  }catch(e){
+    if(msg) msg.innerHTML = `<span class="err">${e?.message ?? e}</span>`;
   }
 }
 

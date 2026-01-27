@@ -1,4 +1,5 @@
 from dataclasses import replace
+import datetime
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
@@ -435,6 +436,11 @@ class RatioSearchRequest(BaseModel):
     crate_weights: Dict[str, float]
 
 
+class StoreUnusedRequest(BaseModel):
+    source_bucket_id: int
+    item_ids: List[int]
+
+
 @app.get("/bucket_crates")
 def bucket_crates(bucket_id: int, user: User = Depends(get_current_user)):
     """
@@ -454,6 +460,53 @@ def bucket_crates(bucket_id: int, user: User = Depends(get_current_user)):
         "bucket_id": bucket_id,
         "crates": [{"crate": k, "count": v} for k, v in crate_list],
     }
+
+
+def _ensure_unique_bucket_name(db, base_name: str) -> str:
+    name = base_name
+    counter = 1
+    while db.query(Bucket).filter(Bucket.name == name).first():
+        counter += 1
+        name = f"{base_name}_{counter}"
+    return name
+
+
+@app.post("/unused_to_bucket")
+def unused_to_bucket(req: StoreUnusedRequest, user: User = Depends(get_current_user)):
+    if not req.item_ids:
+        raise HTTPException(status_code=400, detail="no items to move")
+
+    db = SessionLocal()
+    source_bucket = db.query(Bucket).filter(Bucket.id == req.source_bucket_id).first()
+    if not source_bucket:
+        db.close()
+        raise HTTPException(status_code=404, detail="source bucket not found")
+
+    items = (
+        db.query(Item)
+        .filter(Item.id.in_(req.item_ids), Item.bucket_id == req.source_bucket_id)
+        .all()
+    )
+    if not items:
+        db.close()
+        raise HTTPException(status_code=400, detail="no matching items in source bucket")
+
+    timestamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    base_name = f"unused_{req.source_bucket_id}_{timestamp}"
+    name = _ensure_unique_bucket_name(db, base_name)
+
+    bucket = Bucket(name=name)
+    db.add(bucket)
+    db.commit()
+    db.refresh(bucket)
+
+    for it in items:
+        it.bucket_id = bucket.id
+    db.commit()
+
+    moved = len(items)
+    db.close()
+    return {"bucket_id": bucket.id, "bucket_name": bucket.name, "moved": moved}
 
 
 @app.post("/search_ratio")
