@@ -874,7 +874,8 @@ def pick_candidates_ratio(
             continue
         ms = [m for m in remaining if m.crate == crate]
         ms.sort(key=lambda m: abs(m.x - target_mean_x))
-        quota = max(2, min(len(ms), need * 3))
+        min_per_crate = cap // max(len(crate_order), 1)
+        quota = max(2, min(len(ms), max(need * 3, min_per_crate)))
         for m in ms[:quota]:
             if len(cand) >= cap:
                 break
@@ -1125,88 +1126,6 @@ def _get_seed_plans_ratio(
     seeds.sort(key=lambda t: t[0])
     return seeds
 
-
-def _pack_plans_multistart_ratio(
-    pre: Precomp,
-    slot_ranges: List[dict],
-    L_all: float,
-    U_all: float,
-    target_counts_arr: List[int],
-    *,
-    seed_k: int = 12,
-    right_open: bool = True,
-) -> List[dict]:
-    """
-    目标：尽可能多地返回“严格比例”方案。
-    """
-    sum_lo = 10.0 * L_all
-    sum_hi = 10.0 * U_all
-    desired_total = (sum_lo + sum_hi) / 2.0
-
-    seeds = _get_seed_plans_ratio(
-        pre,
-        sum_lo,
-        sum_hi,
-        desired_total,
-        target_counts_arr,
-        seed_k=seed_k,
-        left_limit=len(pre.combo_sums),
-        probe_limit=120,
-        right_open=right_open,
-    )
-
-    if not seeds:
-        return []
-
-    best_pack = []
-    best_used = -1
-
-    seed_options = [None] + seeds
-
-    for seed in seed_options:
-        used_mask = 0
-        pack = []
-
-        if seed is not None:
-            sum_score, total_sum, chosen, plan_mask = seed
-            used_mask |= plan_mask
-            mean_x = total_sum / 10.0
-            plan = make_plan_dict(pre.rarity, mean_x, chosen, slot_ranges, right_open=right_open)
-            if plan is not None:
-                plan["crate_distance"] = 0
-                pack.append(plan)
-
-        while True:
-            best = query_best_plan_ratio(
-                pre,
-                sum_lo,
-                sum_hi,
-                used_mask,
-                desired_total,
-                target_counts_arr=target_counts_arr,
-                left_limit=12000,
-                probe_limit=80,
-                exact_ratio_only=True,
-                right_open=right_open,
-            )
-            if best is None:
-                break
-            dist, sum_score, total_sum, chosen, plan_mask = best
-            used_mask |= plan_mask
-
-            mean_x = total_sum / 10.0
-            plan = make_plan_dict(pre.rarity, mean_x, chosen, slot_ranges, right_open=right_open)
-            if plan is None:
-                continue
-            plan["crate_distance"] = int(dist)
-            pack.append(plan)
-
-        used_cnt = 10 * len(pack)
-        if (len(pack) > len(best_pack)) or (len(pack) == len(best_pack) and used_cnt > best_used):
-            best_pack = pack
-            best_used = used_cnt
-
-    return best_pack
 
 def _get_seed_plans_ratio(
     pre: Precomp,
@@ -1464,6 +1383,7 @@ def search_plans_for_rarity_ratio(
         if not local_plans:
             if estimate_combo_count(len(remaining)) > max_combo_count:
                 got = False
+                # Try ratio-aware picking with alt targets
                 for alt in (L_all, U_all):
                     cand2 = pick_candidates_ratio(
                         remaining,
@@ -1484,15 +1404,25 @@ def search_plans_for_rarity_ratio(
                         seed_k=12,
                         right_open=right_open,
                     )
-                    if not local_plans:
-                        continue
-                    for plan in local_plans:
-                        plan["crate_target_counts"] = target_counts
-                        all_plans.append(plan)
-                        for m in plan["materials"]:
-                            global_used_ids.add(m["id"])
-                    got = True
-                    break
+                    if local_plans:
+                        got = True
+                        break
+                # Fallback: try generic x-proximity picking (same strategy as normal search)
+                if not got:
+                    cand3 = pick_candidates_targeted(remaining, target_mean_x=target_mean, cap=cap)
+                    pre3 = build_precomp_for_candidates_ratio(rarity, cand3, crate_to_idx=crate_to_idx)
+                    if pre3 is not None:
+                        local_plans = _pack_plans_multistart_ratio(
+                            pre3,
+                            slot_ranges,
+                            L_all,
+                            U_all,
+                            target_arr,
+                            seed_k=12,
+                            right_open=right_open,
+                        )
+                        if local_plans:
+                            got = True
                 if not got:
                     break
             else:
