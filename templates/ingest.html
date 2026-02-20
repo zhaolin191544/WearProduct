@@ -202,6 +202,7 @@ async function createBucket(){
   document.getElementById("bucketSelect").value = String(data.id);
   localStorage.setItem("selected_bucket_id", String(data.id));
   document.getElementById("msg").textContent = "新建桶成功";
+  alert(`✅ 新建桶「${data.name ?? name}」成功！`);
 }
 
 function renderBatch(){
