@@ -47,29 +47,29 @@ def root():
 
 @app.get("/login_page", response_class=HTMLResponse)
 def login_page(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="login.html")
 
 
 @app.get("/app", response_class=HTMLResponse)
 def app_page(request: Request):
-    return templates.TemplateResponse("app.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="app.html")
 
 
 @app.get("/ingest", response_class=HTMLResponse)
 def ingest_page(request: Request):
-    return templates.TemplateResponse("ingest.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="ingest.html")
 
 
 @app.get("/search_page", response_class=HTMLResponse)
 def search_page(request: Request):
     # 原搜索页面（保持不动）
-    return templates.TemplateResponse("search.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="search.html")
 
 
 @app.get("/search_ratio_page", response_class=HTMLResponse)
 def search_ratio_page(request: Request):
     # 新增：按箱子比例搜索页面（独立）
-    return templates.TemplateResponse("search_ratio.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="search_ratio.html")
 
 
 # -------------------------
