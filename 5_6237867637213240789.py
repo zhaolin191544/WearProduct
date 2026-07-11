@@ -382,69 +382,64 @@ def search(req: MultiSearchRequest, user: User = Depends(get_current_user)):
             "notes": ["无解：mean(x) 交集为空（左闭右开）。"]
         }
 
+    def _search_plain():
+        plans = search_bucket_all_plans(
+            materials,
+            slot_ranges,
+            L_all,
+            U_all,
+            cap=40,
+            max_combo_count=2_000_000,
+            right_open=True,
+        )
+        notes = [
+            "普通搜索：只要求磨损满足；找到方案后会排除用料继续搜（提高利用率）。",
+            "边界：左闭右开（target_low <= out < target_high）。"
+        ]
+        return plans, notes
+
+    def _search_prob():
+        none_crate = "none"
+        prob_materials = [replace(m, crate=none_crate) for m in materials]
+        plans, _, _ = search_bucket_all_plans_with_crate_ratio1(
+            prob_materials,
+            slot_ranges,
+            L_all,
+            U_all,
+            crate_weights={none_crate: 1.0},
+            crate_order=[none_crate],
+            cap=40,
+            max_combo_count=2_000_000,
+            right_open=True,
+        )
+        notes = [
+            "普通搜索：使用概率搜索算法（视为 none 箱子填 10）。",
+            "边界：左闭右开（target_low <= out < target_high）。"
+        ]
+        return plans, notes
+
+    # 先尝试一个算法，出不了结果（无方案或报错）再回退到另一个。
+    # 有箱子数据时优先普通搜索，否则优先概率搜索。
     has_crates = any(m.crate for m in materials)
-    if has_crates:
-        plans = search_bucket_all_plans(
-            materials,
-            slot_ranges,
-            L_all,
-            U_all,
-            cap=40,
-            max_combo_count=2_000_000,
-            right_open=True,
-        )
-        notes = [
-            "普通搜索：只要求磨损满足；找到方案后会排除用料继续搜（提高利用率）。",
-            "边界：左闭右开（target_low <= out < target_high）。"
-        ]
-        # none_crate = "none"
-        # materials = [replace(m, crate=none_crate) for m in materials]
-        # plans, _, _ = search_bucket_all_plans_with_crate_ratio1(
-        #     materials,
-        #     slot_ranges,
-        #     L_all,
-        #     U_all,
-        #     crate_weights={none_crate: 1.0},
-        #     crate_order=[none_crate],
-        #     cap=40,
-        #     max_combo_count=2_000_000,
-        #     right_open=True,
-        # )
-        # notes = [
-        #     "普通搜索：桶内无箱子数据，使用概率搜索算法（视为 none 箱子填 10）。",
-        #     "边界：左闭右开（target_low <= out < target_high）。"
-        # ]
-    else:
-        # none_crate = "none"
-        # materials = [replace(m, crate=none_crate) for m in materials]
-        # plans, _, _ = search_bucket_all_plans_with_crate_ratio1(
-        #     materials,
-        #     slot_ranges,
-        #     L_all,
-        #     U_all,
-        #     crate_weights={none_crate: 1.0},
-        #     crate_order=[none_crate],
-        #     cap=40,
-        #     max_combo_count=2_000_000,
-        #     right_open=True,
-        # )
-        # notes = [
-        #     "普通搜索：桶内无箱子数据，使用概率搜索算法（视为 none 箱子填 10）。",
-        #     "边界：左闭右开（target_low <= out < target_high）。"
-        # ]
-        plans = search_bucket_all_plans(
-            materials,
-            slot_ranges,
-            L_all,
-            U_all,
-            cap=40,
-            max_combo_count=2_000_000,
-            right_open=True,
-        )
-        notes = [
-            "普通搜索：只要求磨损满足；找到方案后会排除用料继续搜（提高利用率）。",
-            "边界：左闭右开（target_low <= out < target_high）。"
-        ]
+    attempts = [_search_plain, _search_prob] if has_crates else [_search_prob, _search_plain]
+
+    plans: List[dict] = []
+    notes = ["无解：两种搜索算法均未找到方案。"]
+    errors: List[str] = []
+    for idx, attempt in enumerate(attempts):
+        try:
+            got_plans, got_notes = attempt()
+        except Exception as e:
+            errors.append(f"{attempt.__name__}: {e}")
+            continue
+        if got_plans:
+            plans, notes = got_plans, got_notes
+            if idx > 0:
+                notes = notes + ["提示：首选算法未出结果，已自动回退到备用算法。"]
+            break
+    if not plans and errors:
+        notes = notes + [f"搜索过程中出现错误：{'; '.join(errors)}"]
+
     return {
         "input_slots": len(slots),
         "joint_mean_x_range": {"L": L_all, "U": U_all},
