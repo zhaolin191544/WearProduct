@@ -1,4 +1,3 @@
-from dataclasses import replace
 import datetime
 
 from fastapi import FastAPI, Depends, HTTPException, Request
@@ -18,10 +17,6 @@ from search_engine import (
     out_to_mean_x_range,
     search_bucket_all_plans,
     search_bucket_all_plans_with_crate_ratio,
-)
-
-from search import (
-    search_bucket_all_plans_with_crate_ratio1,
 )
 
 
@@ -382,69 +377,24 @@ def search(req: MultiSearchRequest, user: User = Depends(get_current_user)):
             "notes": ["无解：mean(x) 交集为空（左闭右开）。"]
         }
 
-    has_crates = any(m.crate for m in materials)
-    if has_crates:
-        plans = search_bucket_all_plans(
-            materials,
-            slot_ranges,
-            L_all,
-            U_all,
-            cap=40,
-            max_combo_count=2_000_000,
-            right_open=True,
-        )
-        notes = [
-            "普通搜索：只要求磨损满足；找到方案后会排除用料继续搜（提高利用率）。",
-            "边界：左闭右开（target_low <= out < target_high）。"
-        ]
-        # none_crate = "none"
-        # materials = [replace(m, crate=none_crate) for m in materials]
-        # plans, _, _ = search_bucket_all_plans_with_crate_ratio1(
-        #     materials,
-        #     slot_ranges,
-        #     L_all,
-        #     U_all,
-        #     crate_weights={none_crate: 1.0},
-        #     crate_order=[none_crate],
-        #     cap=40,
-        #     max_combo_count=2_000_000,
-        #     right_open=True,
-        # )
-        # notes = [
-        #     "普通搜索：桶内无箱子数据，使用概率搜索算法（视为 none 箱子填 10）。",
-        #     "边界：左闭右开（target_low <= out < target_high）。"
-        # ]
-    else:
-        # none_crate = "none"
-        # materials = [replace(m, crate=none_crate) for m in materials]
-        # plans, _, _ = search_bucket_all_plans_with_crate_ratio1(
-        #     materials,
-        #     slot_ranges,
-        #     L_all,
-        #     U_all,
-        #     crate_weights={none_crate: 1.0},
-        #     crate_order=[none_crate],
-        #     cap=40,
-        #     max_combo_count=2_000_000,
-        #     right_open=True,
-        # )
-        # notes = [
-        #     "普通搜索：桶内无箱子数据，使用概率搜索算法（视为 none 箱子填 10）。",
-        #     "边界：左闭右开（target_low <= out < target_high）。"
-        # ]
-        plans = search_bucket_all_plans(
-            materials,
-            slot_ranges,
-            L_all,
-            U_all,
-            cap=40,
-            max_combo_count=2_000_000,
-            right_open=True,
-        )
-        notes = [
-            "普通搜索：只要求磨损满足；找到方案后会排除用料继续搜（提高利用率）。",
-            "边界：左闭右开（target_low <= out < target_high）。"
-        ]
+    # 统一策略：不区分桶内有无武器箱字段，全部走同一套搜索。
+    # 快速优先（定向候选 + 提前接受窗口内的解），找不到时自动加大搜索力度，
+    # 整体受时间预算限制，避免长时间无响应。
+    plans = search_bucket_all_plans(
+        materials,
+        slot_ranges,
+        L_all,
+        U_all,
+        cap=40,
+        max_combo_count=2_000_000,
+        right_open=True,
+        time_budget_s=10.0,
+    )
+    notes = [
+        "普通搜索：不区分武器箱，只要求磨损满足；找到方案后会排除用料继续搜（提高利用率）。",
+        "策略：快速搜索优先，找不到时自动加大搜索范围，总耗时上限约 10 秒。",
+        "边界：左闭右开（target_low <= out < target_high）。"
+    ]
     return {
         "input_slots": len(slots),
         "joint_mean_x_range": {"L": L_all, "U": U_all},

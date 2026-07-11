@@ -1,10 +1,16 @@
 import itertools
 import math
+import time
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional, Iterable, Set
 from bisect import bisect_left
 
 EPS = 1e-12
+
+
+def _expired(deadline: Optional[float]) -> bool:
+    """deadline 为 time.monotonic() 时间点；None 表示不限时。"""
+    return deadline is not None and time.monotonic() >= deadline
 
 # ----------------------------
 # Data structures
@@ -126,7 +132,7 @@ def pick_candidates_targeted(
     cand.sort(key=lambda m: m.x)
     return cand
 
-def build_precomp_for_candidates(rarity: int, cand: List[Material]) -> Optional[Precomp]:
+def build_precomp_for_candidates(rarity: int, cand: List[Material], *, deadline: Optional[float] = None) -> Optional[Precomp]:
     cand = sorted(cand, key=lambda m: m.x)
     if len(cand) < 10:
         return None
@@ -140,7 +146,12 @@ def build_precomp_for_candidates(rarity: int, cand: List[Material]) -> Optional[
     xs_local = xs
     bits_local = bits
     append = combos5.append
+    cnt = 0
     for idxs in itertools.combinations(range(n), 5):
+        # 超时则用已生成的部分组合继续（结果仍会被 make_plan_dict 校验）
+        cnt += 1
+        if (cnt & 0xFFFF) == 0 and _expired(deadline):
+            break
         i1, i2, i3, i4, i5 = idxs
         s = xs_local[i1] + xs_local[i2] + xs_local[i3] + xs_local[i4] + xs_local[i5]
         mask = bits_local[i1] | bits_local[i2] | bits_local[i3] | bits_local[i4] | bits_local[i5]
@@ -345,6 +356,8 @@ def query_best_plan_fast(
     window_scan_threshold: int = 6000,   # ⭐新增：窗口小就扫窗口，减少漏解
     eps: float = 1e-9,
     right_open: bool = True,
+    accept_score: Optional[float] = None,  # ⭐新增：分数足够好就提前返回（任何窗口内的解都可用）
+    deadline: Optional[float] = None,      # ⭐新增：超时返回当前最优
 ):
     """
     Return (score, total_sum_x, chosen_materials[10], plan_mask) or None
@@ -352,6 +365,9 @@ def query_best_plan_fast(
     改进点：
     - 右侧不再固定 probe 60；当可行窗口较小（<=window_scan_threshold）时，
       直接在窗口内按“接近 targetR”扫完整个窗口 -> 大幅降低漏第二组的概率。
+    - accept_score：窗口内任何 total 都是合法方案，score 只是“居中程度”；
+      找到足够居中的解就提前返回，避免为最优解扫完整个左表。
+    - deadline：超时立刻带着当前最优返回，保证接口整体可控。
     """
     combos = pre.combos5
     sums = pre.combo_sums
@@ -363,7 +379,11 @@ def query_best_plan_fast(
     target_left = desired_total / 2.0
     best = None  # (score, total, chosen, mask)
 
+    checked = 0
     for li in iter_indices_near_target(sums, target_left, left_limit):
+        checked += 1
+        if (checked & 0xFF) == 0 and _expired(deadline):
+            break
         sL, maskL, idxL = combos[li]
         if maskL & used_mask:
             continue
@@ -409,7 +429,7 @@ def query_best_plan_fast(
                 cand = (score, total, chosen, plan_mask)
                 if best is None or score < best[0]:
                     best = cand
-                    if best[0] < 1e-10:
+                    if best[0] < 1e-10 or (accept_score is not None and best[0] <= accept_score):
                         return best
         else:
             # 窗口大：保留 probe 模式（快）
@@ -446,7 +466,7 @@ def query_best_plan_fast(
                     cand = (score, total, chosen, plan_mask)
                     if best is None or score < best[0]:
                         best = cand
-                        if best[0] < 1e-10:
+                        if best[0] < 1e-10 or (accept_score is not None and best[0] <= accept_score):
                             return best
 
     return best
@@ -512,6 +532,7 @@ def _get_seed_plans(
     left_limit: int = 40000,
     probe_limit: int = 200,
     right_open: bool = True,
+    deadline: Optional[float] = None,
 ) -> List[tuple]:
     """
     找一批“第一组候选方案”（允许相互重叠），用于 multi-start。
@@ -526,7 +547,11 @@ def _get_seed_plans(
     seeds = []
     seen = set()
 
+    checked = 0
     for li in iter_indices_near_target(sums, target_left, left_limit):
+        checked += 1
+        if (checked & 0xFF) == 0 and _expired(deadline):
+            break
         sL, maskL, idxL = combos[li]
         need_lo = sum_lo - sL
         need_hi = sum_hi - sL
@@ -584,21 +609,26 @@ def _pack_plans_multistart(
     *,
     seed_k: int = 25,
     right_open: bool = True,
+    deadline: Optional[float] = None,
 ) -> List[dict]:
     """
     目标：尽可能“跑完材料”（最大化方案数量；其次最大化用料数量）。
     只用于小桶（几十件）最划算。
+    整体受 deadline 限制：超时立即返回目前最好的 pack。
     """
     sum_lo = 10.0 * L_all
     sum_hi = 10.0 * U_all
     desired_total = (sum_lo + sum_hi) / 2.0
+    # 窗口内任何解都合法；居中到窗口一半以内就接受，避免每次查询都全表扫
+    accept_score = 0.25 * (sum_hi - sum_lo)
 
     seeds = _get_seed_plans(
         pre, sum_lo, sum_hi, desired_total,
         seed_k=seed_k,
         left_limit=len(pre.combo_sums),  # 小桶：尽量不漏
         probe_limit=250,
-        right_open=right_open
+        right_open=right_open,
+        deadline=deadline,
     )
 
     # 如果连 seed 都没有，就直接返回空
@@ -611,7 +641,12 @@ def _pack_plans_multistart(
     # 同时加一个“从无 seed 直接贪心”的备选
     seed_options = [None] + seeds
 
+    max_possible = len(pre.mats) // 10  # 每 10 件最多出 1 个方案
+    no_improve = 0
+
     for seed in seed_options:
+        if _expired(deadline):
+            break
         used_mask = 0
         pack = []
 
@@ -626,10 +661,14 @@ def _pack_plans_multistart(
         while True:
             best = query_best_plan_fast(
                 pre, sum_lo, sum_hi, used_mask, desired_total,
-                left_limit=len(pre.combo_sums),   # 小桶：全扫 left 更稳
+                # 左表按“接近目标”排序取前 15 万已足够稳；全扫会让“确认无解”的
+                # 收尾查询在百万级组合上耗掉大部分时间
+                left_limit=min(len(pre.combo_sums), 150_000),
                 probe_limit=220,
                 window_scan_threshold=9000,
-                right_open=right_open
+                right_open=right_open,
+                accept_score=accept_score,
+                deadline=deadline,
             )
             if best is None:
                 break
@@ -647,6 +686,16 @@ def _pack_plans_multistart(
         if (len(pack) > len(best_pack)) or (len(pack) == len(best_pack) and used_cnt > best_used):
             best_pack = pack
             best_used = used_cnt
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        # 已达理论上限，不可能更好
+        if len(best_pack) >= max_possible:
+            break
+        # 连续多个起点无改进：seed 按分数排序，后面的大概率也一样，提前收工
+        if no_improve >= 6:
+            break
 
     return best_pack
 
@@ -660,25 +709,29 @@ def search_plans_for_rarity(
     *,
     cap: int = 40,
     max_combo_count: int = 2_000_000,
-    max_rounds: int = 8,
+    max_rounds: int = 16,
     right_open: bool = True,
+    deadline: Optional[float] = None,
 ) -> List[dict]:
     """
-    Improve utilization:
-    - Not only one fixed candidate set of size 'cap'
-    - We repeatedly pick a new candidate set from remaining materials and search again,
-      so a 200-item bucket can yield >4 plans (cap=40 would otherwise hard-cap to 4).
+    速度优先、逐级加码：
+    - 第一档：定向候选（cap 个）+ 适度扫描，快速出结果；
+    - 第二档：找不到时换目标点（L_all / U_all）重新选候选再快速试；
+    - 第三档：仍找不到且剩余量允许时，全量枚举 + 全窗口扫描兜底（慢但基本不漏）；
+    全程受 deadline 限制，超时立即返回已找到的方案。
     """
     # sum range of 10 items
     sum_lo = 10.0 * L_all
     sum_hi = 10.0 * U_all
     desired_total = (sum_lo + sum_hi) / 2.0
     target_mean = (L_all + U_all) / 2.0
+    # 窗口内任何解都合法；居中到窗口一半以内就接受，避免为“最优”扫全表
+    accept_score = 0.25 * (sum_hi - sum_lo)
 
     mats_sorted = sorted(mats_all, key=lambda m: m.x)
 
     if len(mats_sorted) <= 60 and estimate_combo_count(len(mats_sorted)) <= max_combo_count:
-        pre_small = build_precomp_for_candidates(rarity, mats_sorted)
+        pre_small = build_precomp_for_candidates(rarity, mats_sorted, deadline=deadline)
         if pre_small is not None:
             return _pack_plans_multistart(
                 pre_small,
@@ -687,48 +740,29 @@ def search_plans_for_rarity(
                 U_all,
                 seed_k=30,
                 right_open=right_open,
+                deadline=deadline,
             )
 
     global_used_ids: Set[int] = set()
     all_plans: List[dict] = []
 
-    rounds = 0
-    while rounds < max_rounds:
-        remaining = [m for m in mats_sorted if m.id not in global_used_ids]
-        if len(remaining) < 10:
-            break
-
-        # quick feasibility on remaining
-        xs_rem = [m.x for m in remaining]
-        xs_rem.sort()
-        min_sum = sum(xs_rem[:10])
-        max_sum = sum(xs_rem[-10:])
-        if sum_hi < min_sum - 1e-7 or sum_lo > max_sum + 1e-7:
-            break
-
-        # decide candidates: if remaining small enough, use all; else targeted cap
-        if estimate_combo_count(len(remaining)) <= max_combo_count:
-            cand = remaining
-        else:
-            cand = pick_candidates_targeted(remaining, target_mean_x=target_mean, cap=cap, edge_k=6)
-
-        pre = build_precomp_for_candidates(rarity, cand)
-        if pre is None:
-            break
-
-        # local greedy extraction within this candidate set
+    def _extract_plans(pre: Precomp, *, left_limit: int, probe_limit: int, window_scan_threshold: int = 6000) -> int:
+        """在一个候选集合上贪心提取方案（互不重叠），返回提取数量。"""
         used_mask = 0
-        local_found = 0
-        while True:
+        found = 0
+        while not _expired(deadline):
             best = query_best_plan_fast(
                 pre,
                 sum_lo,
                 sum_hi,
                 used_mask,
                 desired_total,
-                left_limit=20000,
-                probe_limit=60,
+                left_limit=left_limit,
+                probe_limit=probe_limit,
+                window_scan_threshold=window_scan_threshold,
                 right_open=right_open,
+                accept_score=accept_score,
+                deadline=deadline,
             )
             if best is None:
                 break
@@ -742,48 +776,70 @@ def search_plans_for_rarity(
                 continue
 
             all_plans.append(plan)
-            local_found += 1
+            found += 1
             for m in chosen:
                 global_used_ids.add(m.id)
 
             # stop if candidate is exhausted
             if len([m for m in pre.mats if m.id not in global_used_ids]) < 10:
                 break
+        return found
+
+    rounds = 0
+    while rounds < max_rounds and not _expired(deadline):
+        remaining = [m for m in mats_sorted if m.id not in global_used_ids]
+        if len(remaining) < 10:
+            break
+
+        # quick feasibility on remaining
+        xs_rem = [m.x for m in remaining]
+        xs_rem.sort()
+        min_sum = sum(xs_rem[:10])
+        max_sum = sum(xs_rem[-10:])
+        if sum_hi < min_sum - 1e-7 or sum_lo > max_sum + 1e-7:
+            break
+
+        # 第一档：定向候选，小枚举快速搜（不再一上来就全量枚举剩余材料）
+        if len(remaining) <= cap:
+            cand = remaining
+        else:
+            cand = pick_candidates_targeted(remaining, target_mean_x=target_mean, cap=cap, edge_k=6)
+
+        pre = build_precomp_for_candidates(rarity, cand, deadline=deadline)
+        if pre is None:
+            break
+
+        local_found = _extract_plans(pre, left_limit=20000, probe_limit=60)
+
+        if local_found == 0 and len(remaining) > cap and not _expired(deadline):
+            # 第二档：候选是被裁剪过的，换目标点重新选候选再快速试
+            for alt in (L_all, U_all):
+                if _expired(deadline):
+                    break
+                cand2 = pick_candidates_targeted(remaining, target_mean_x=alt, cap=cap, edge_k=6)
+                pre2 = build_precomp_for_candidates(rarity, cand2, deadline=deadline)
+                if pre2 is None:
+                    continue
+                local_found = _extract_plans(pre2, left_limit=20000, probe_limit=80)
+                if local_found:
+                    break
+
+        if local_found == 0 and not _expired(deadline):
+            # 第三档：兜底 —— 全窗口扫描；剩余量允许时对剩余材料全量枚举
+            pre3 = pre
+            if len(remaining) > cap and estimate_combo_count(len(remaining)) <= max_combo_count:
+                pre_full = build_precomp_for_candidates(rarity, remaining, deadline=deadline)
+                if pre_full is not None:
+                    pre3 = pre_full
+            local_found = _extract_plans(
+                pre3,
+                left_limit=len(pre3.combo_sums),
+                probe_limit=220,
+                window_scan_threshold=20000,
+            )
 
         if local_found == 0:
-            # If we found nothing in this candidate set, likely candidate picking missed;
-            # For robustness, try once with a different target (L_all or U_all) by shifting mean.
-            # If still none, stop to avoid long waits.
-            if estimate_combo_count(len(remaining)) > max_combo_count:
-                alt_targets = [L_all, U_all]
-                got = False
-                for alt in alt_targets:
-                    cand2 = pick_candidates_targeted(remaining, target_mean_x=alt, cap=cap, edge_k=6)
-                    pre2 = build_precomp_for_candidates(rarity, cand2)
-                    if pre2 is None:
-                        continue
-                    used_mask2 = 0
-                    best2 = query_best_plan_fast(
-                        pre2, sum_lo, sum_hi, used_mask2, desired_total,
-                        left_limit=20000, probe_limit=80, right_open=right_open
-                    )
-                    if best2 is None:
-                        continue
-                    score, total_sum, chosen, plan_mask = best2
-                    mean_x = total_sum / 10.0
-                    plan2 = make_plan_dict(rarity, mean_x, chosen, slot_ranges, right_open=right_open)
-                    used_mask2 |= plan_mask
-                    if plan2 is None:
-                        continue
-                    all_plans.append(plan2)
-                    for m in chosen:
-                        global_used_ids.add(m.id)
-                    got = True
-                    break
-                if not got:
-                    break
-            else:
-                break
+            break
 
         rounds += 1
 
@@ -798,15 +854,29 @@ def search_bucket_all_plans(
     cap: int = 40,
     max_combo_count: int = 2_000_000,
     right_open: bool = True,
+    time_budget_s: Optional[float] = None,
 ) -> List[dict]:
+    """
+    time_budget_s：整次搜索的总时间预算（秒），None 表示不限时。
+    剩余时间会平均分给还没搜的稀有度；先搜完的稀有度会把余量让给后面的。
+    """
     mats_by_rarity: Dict[int, List[Material]] = {}
     for m in materials:
         mats_by_rarity.setdefault(m.rarity, []).append(m)
 
+    groups = [(r, mats) for r, mats in sorted(mats_by_rarity.items(), key=lambda kv: kv[0]) if len(mats) >= 10]
+
+    overall_deadline: Optional[float] = None
+    if time_budget_s is not None:
+        overall_deadline = time.monotonic() + time_budget_s
+
     plans: List[dict] = []
-    for rarity, mats in sorted(mats_by_rarity.items(), key=lambda kv: kv[0]):
-        if len(mats) < 10:
-            continue
+    for i, (rarity, mats) in enumerate(groups):
+        deadline: Optional[float] = None
+        if overall_deadline is not None:
+            now = time.monotonic()
+            remaining_time = max(0.0, overall_deadline - now)
+            deadline = now + remaining_time / (len(groups) - i)
         plans.extend(search_plans_for_rarity(
             rarity,
             mats,
@@ -815,8 +885,9 @@ def search_bucket_all_plans(
             U_all,
             cap=cap,
             max_combo_count=max_combo_count,
-            max_rounds=8,
+            max_rounds=16,
             right_open=right_open,
+            deadline=deadline,
         ))
     return plans
 
